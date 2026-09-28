@@ -210,7 +210,6 @@
   function renderState(state) {
     const snapshot = state && state.snapshot;
     latestSnapshot = snapshot;
-    const counters = state && state.counters;
     const status = ChatGPTUsageModel.summarizeAvailability(snapshot || state);
     const hasVisibleUsage = ChatGPTUsageModel.hasVisibleUsage(snapshot);
     const domUsageVisible = Boolean(snapshot && (snapshot.domUsageVisible || hasVisibleUsage));
@@ -272,13 +271,11 @@
       ["Visible fields found", renderVisibleFields(snapshot)],
       ["Data collected", state && (state.dataCollectedAt || state.lastRefreshAt) ? ChatGPTUsageModel.formatTime(state.dataCollectedAt || state.lastRefreshAt) : "Unavailable"],
       ["Last refresh attempt", state && state.lastRefreshAttemptAt ? ChatGPTUsageModel.formatTime(state.lastRefreshAttemptAt) : "Unavailable"],
-      ["Local tracking", counters && counters.localTrackingActive ? badge("Active", "ok") : badge("Inactive", "warn")],
-      ["Last detected send", counters && counters.last_message_timestamp ? ChatGPTUsageModel.formatTime(counters.last_message_timestamp) : "None"],
       ["Storage", "chrome.storage.local only"],
       ["Network", "No third-party requests"]
     ]);
 
-    warningBox.textContent = collectWarnings(snapshot, counters, state).slice(0, 5).join(" ");
+    warningBox.textContent = collectWarnings(snapshot, state).slice(0, 5).join(" ");
     latestDiagnostics = buildDiagnosticsPayload(state);
   }
 
@@ -483,9 +480,8 @@
 
   function buildDiagnosticsPayload(state) {
     const snapshot = state && state.snapshot;
-    const counters = state && state.counters;
     return {
-      extension: "Codex Usage Viewer",
+      extension: "ChatGPT Usage Viewer",
       diagnosticSchema: 1,
       status: state && state.status ? state.status : null,
       popupStatus: statusTitle ? statusTitle.textContent : null,
@@ -514,12 +510,11 @@
           readyState: snapshot.codexAnalytics.domSignals.readyState || null
         } : null
       } : null,
-      localTrackingActive: Boolean(counters && counters.localTrackingActive),
       dataCollectedAt: state && (state.dataCollectedAt || state.lastRefreshAt) ? state.dataCollectedAt || state.lastRefreshAt : null,
       lastRefreshAttemptAt: state && state.lastRefreshAttemptAt ? state.lastRefreshAttemptAt : null,
       collectedAt: snapshot && snapshot.collectedAt ? snapshot.collectedAt : null,
       storage: "chrome.storage.local only",
-      network: "no third-party requests"
+      network: "no usage uploads or telemetry"
     };
   }
 
@@ -546,7 +541,7 @@
       .map(([key]) => key);
   }
 
-  function collectWarnings(snapshot, counters, state) {
+  function collectWarnings(snapshot, state) {
     const warnings = [];
     if (state && state.status === "content-script-unavailable") {
       warnings.push("Analytics loaded but its content script did not respond after all retries.");

@@ -6,6 +6,7 @@ const { test } = require("node:test");
 const popupHtml = readFileSync(join(__dirname, "..", "popup.html"), "utf8");
 const popupSource = readFileSync(join(__dirname, "..", "popup.js"), "utf8");
 const manifest = JSON.parse(readFileSync(join(__dirname, "..", "manifest.json"), "utf8"));
+const packageMetadata = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
 const offscreenSource = readFileSync(join(__dirname, "..", "offscreen.js"), "utf8");
 
 test("the popup uses the compact layout without a mode toggle", () => {
@@ -15,6 +16,28 @@ test("the popup uses the compact layout without a mode toggle", () => {
   assert.match(popupSource, /CodexCapacityMonitor\.classifyUsageLevel\(remainingPercent\)/);
   assert.match(popupSource, /classList\.add\("percentage-metric", `usage-\$\{usageLevel\}`\)/);
   assert.match(popupHtml, /\.percentage-metric \.metric-value\s*{[^}]*conic-gradient/s);
+});
+
+test("the popup footer credits both sites in tiny text and identifies the local-only status", () => {
+  assert.match(popupHtml, /made with ❤️ by/);
+  assert.match(popupHtml, /href="https:\/\/nikdesign\.ca\/"/);
+  assert.match(popupHtml, /href="https:\/\/teambotics\.app\/"/);
+  assert.match(popupHtml, /\.foot-credit\s*{[^}]*font-size:\s*9px/s);
+  assert.match(popupHtml, /Local only\. Not affiliated with OpenAI\./);
+});
+
+test("release author and versions match extension metadata", () => {
+  assert.equal(packageMetadata.author, "Teambotic Inc");
+  assert.equal(packageMetadata.homepage, "https://www.teambotics.app/");
+  assert.equal(packageMetadata.name, "chatgpt-usage-viewer");
+  assert.equal(packageMetadata.version, manifest.version);
+  assert.equal(manifest.version, "0.5.1");
+  assert.equal(manifest.homepage_url, "https://www.teambotics.app/");
+  assert.equal(manifest.name, "ChatGPT Usage Viewer");
+  assert.equal(manifest.action.default_title, "ChatGPT Usage Viewer");
+  assert.match(popupHtml, /<title>ChatGPT Usage Viewer<\/title>/);
+  assert.match(popupHtml, /<h1>ChatGPT Usage Viewer<\/h1>/);
+  assert.match(popupSource, /extension: "ChatGPT Usage Viewer"/);
 });
 
 test("account metadata has no redundant ChatGPT section heading", () => {

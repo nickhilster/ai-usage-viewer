@@ -7,11 +7,12 @@ const vm = require("node:vm");
 const { ChatGPTUsageConfig, ChatGPTUsageModel } = require("../usage-model.js");
 const { CodexCapacityMonitor } = require("../capacity-monitor.js");
 const backgroundSource = readFileSync(join(__dirname, "..", "background.js"), "utf8");
+const LEGACY_MESSAGE_COUNTERS_KEY = "chatgptUsageMonitor.counters";
 
-function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null, createError = null, initialState = {}, existingAlarm = true, retainedSignInTabId = null, localRetainedSignInTabId = null, refreshPeriodMinutes = null, capacitySettings = null, capacityState = null, enableCustomActionIcon = false, blockCapacityInitialization = false, callbackOnlyNotificationClear = false } = {}) {
+function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null, createError = null, initialState = {}, existingAlarm = true, retainedSignInTabId = null, localRetainedSignInTabId = null, refreshPeriodMinutes = null, capacitySettings = null, capacityState = null, enableCustomActionIcon = false, blockCapacityInitialization = false, callbackOnlyNotificationClear = false, deferRefreshTimeout = false } = {}) {
   const storage = {
     [ChatGPTUsageConfig.storageKeys.state]: initialState,
-    [ChatGPTUsageConfig.storageKeys.counters]: ChatGPTUsageModel.defaultCounters(1),
+    [LEGACY_MESSAGE_COUNTERS_KEY]: { events: [{ ts: 1, kind: "message" }] },
     [ChatGPTUsageConfig.storageKeys.retainedSignInTab]: localRetainedSignInTabId,
     [ChatGPTUsageConfig.storageKeys.refreshPeriodMinutes]: refreshPeriodMinutes,
     [ChatGPTUsageConfig.storageKeys.capacitySettings]: capacitySettings,
@@ -83,6 +84,9 @@ function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null,
         },
         async set(values) {
           Object.assign(storage, values);
+        },
+        async remove(keys) {
+          for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key];
         }
       },
       session: {
@@ -209,7 +213,8 @@ function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null,
     clearTimeout,
     console,
     importScripts() {},
-    setTimeout(callback) {
+    setTimeout(callback, ms) {
+      if (deferRefreshTimeout && ms === 45000) return setTimeout(callback, ms);
       queueMicrotask(callback);
       return 1;
     }
@@ -261,6 +266,69 @@ test("background worker startup repairs a missing periodic alarm", async () => {
     delayInMinutes: 1,
     periodInMinutes: 15
   }]);
+});
+
+test("installation removes legacy message counts and starts one usage refresh with a 15-minute alarm", async () => {
+  const observedCapacity = CodexCapacityMonitor.evaluateSnapshot({
+    usage: { codexWeekly: { value: "42% remaining", structured: { remainingPercent: 42 } } }
+  }, null, {}).state;
+  const harness = createBackgroundHarness({
+    existingAlarm: false,
+    snapshot: visibleSnapshot(),
+    initialState: { counters: { messages_5h: 7 } },
+    capacityState: observedCapacity,
+    deferRefreshTimeout: true
+  });
+
+  const installRefresh = await harness.listeners.installed();
+
+  assert.equal(installRefresh.ok, true, installRefresh.error);
+  assert.equal(harness.calls.create, 1);
+  assert.equal(harness.calls.sendMessage, 13);
+  assert.ok(harness.calls.alarmCreate >= 1);
+  assert.ok(harness.calls.alarmCreateArgs.every((alarm) => alarm.periodInMinutes === 15));
+  assert.equal(LEGACY_MESSAGE_COUNTERS_KEY in harness.storage, false);
+  assert.equal("counters" in harness.storage[ChatGPTUsageConfig.storageKeys.state], false);
+  assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.capacityState].counters.codexWeekly.remainingPercent, 42);
+});
+
+test("an unparseable Analytics refresh preserves the last valid values and timestamps", async () => {
+  const cached = visibleSnapshot();
+  const collectedAt = "2026-08-24T10:05:00.000Z";
+  const refreshedAt = "2026-08-24T10:06:00.000Z";
+  const harness = createBackgroundHarness({
+    snapshot: {
+      status: "ok", loginStatus: "logged-in", codexAnalytics: { pageDetected: true },
+      domUsageVisible: false, usage: {}
+    },
+    initialState: { snapshot: cached, dataCollectedAt: collectedAt, lastRefreshAt: refreshedAt }
+  });
+
+  const result = await harness.run("refreshForPopup()");
+
+  assert.equal(result.state.status, "analytics-no-new-data");
+  assert.deepEqual(result.state.snapshot, cached);
+  assert.equal(result.state.dataCollectedAt, collectedAt);
+  assert.equal(result.state.lastRefreshAt, refreshedAt);
+  assert.equal("counters" in result.state, false);
+});
+
+test("a load failure preserves the last valid values and timestamps", async () => {
+  const cached = visibleSnapshot();
+  const collectedAt = "2026-08-24T10:05:00.000Z";
+  const refreshedAt = "2026-08-24T10:06:00.000Z";
+  const harness = createBackgroundHarness({
+    createError: new Error("Tabs cannot be created"),
+    initialState: { snapshot: cached, dataCollectedAt: collectedAt, lastRefreshAt: refreshedAt }
+  });
+
+  const result = await harness.run("refreshForPopup()");
+
+  assert.equal(result.state.status, "codex-analytics-load-failed");
+  assert.deepEqual(result.state.snapshot, cached);
+  assert.equal(result.state.dataCollectedAt, collectedAt);
+  assert.equal(result.state.lastRefreshAt, refreshedAt);
+  assert.equal("counters" in result.state, false);
 });
 
 test("changing the refresh interval reprograms the periodic alarm", async () => {
@@ -1638,7 +1706,7 @@ function visibleSnapshot() {
     codexAnalytics: { pageDetected: true },
     domUsageVisible: true,
     usage: {
-      codex5h: { value: "5h limit: 60% remaining" },
+      codex5h: { value: "5h limit: 60% remaining", structured: { remainingPercent: 60 } },
       bankedResets: {
         value: "Banked resets: 2; expires Aug 31, 2026",
         structured: { bankedResetCount: 2, expiresText: "Aug 31, 2026" }
@@ -1936,6 +2004,24 @@ test("repeated logged-out refreshes reuse one retained background sign-in tab", 
   assert.equal(harness.sessionStorage[ChatGPTUsageConfig.storageKeys.retainedSignInTab], 99);
 });
 
+test("a scheduled sign-in tab is retained and adopted by the next refresh", async () => {
+  const harness = createBackgroundHarness({
+    snapshot: {
+      status: "ok", loginStatus: "logged-out", codexAnalytics: { pageDetected: true },
+      domUsageVisible: false, usage: {}
+    }
+  });
+
+  const first = await harness.run('refreshOnce("alarm")');
+  const second = await harness.run('refreshOnce("alarm")');
+
+  assert.equal(first.state.status, "sign-in-required");
+  assert.equal(second.state.status, "sign-in-required");
+  assert.equal(harness.calls.create, 1);
+  assert.equal(harness.calls.remove, 0);
+  assert.equal(harness.sessionStorage[ChatGPTUsageConfig.storageKeys.retainedSignInTab], 99);
+});
+
 test("automatic sign-in redirects remain owned and are returned to Analytics", async () => {
   const loggedOutSnapshot = {
     status: "ok",
@@ -2087,7 +2173,7 @@ test("an active retained Analytics tab becomes user-owned while refresh uses a t
   assert.equal(harness.sessionStorage[ChatGPTUsageConfig.storageKeys.retainedSignInTab], null);
 });
 
-test("a periodic logged-out refresh closes its temporary tab without stealing focus", async () => {
+test("a periodic logged-out refresh retains its temporary tab without stealing focus", async () => {
   const harness = createBackgroundHarness({
     snapshot: {
       status: "ok",
@@ -2103,10 +2189,10 @@ test("a periodic logged-out refresh closes its temporary tab without stealing fo
   const result = await harness.run('refreshOnce("alarm")');
 
   assert.equal(result.ok, true);
-  assert.equal(result.state.status, "sign-in-required-manual-refresh");
+  assert.equal(result.state.status, "sign-in-required");
   assert.equal(harness.calls.create, 1);
   assert.equal(harness.calls.update, 0);
-  assert.equal(harness.calls.remove, 1);
+  assert.equal(harness.calls.remove, 0);
 });
 
 test("a successful periodic refresh removes an extension-owned sign-in tab", async () => {
@@ -2122,8 +2208,8 @@ test("a successful periodic refresh removes an extension-owned sign-in tab", asy
   const result = await harness.run('refreshOnce("alarm")');
 
   assert.equal(result.state.status, "usage-current");
-  assert.equal(harness.calls.create, 1);
-  assert.deepEqual(harness.calls.removedTabIds, [42, 99]);
+  assert.equal(harness.calls.create, 0);
+  assert.deepEqual(harness.calls.removedTabIds, [42]);
   assert.equal(harness.sessionStorage[ChatGPTUsageConfig.storageKeys.retainedSignInTab], null);
 });
 
@@ -2137,18 +2223,13 @@ test("scheduled sign-in status preserves a newer stored usage snapshot", async (
       lastRefreshAt: "2026-08-24T10:05:00.000Z"
     }
   });
-  harness.context.staleSignInResult = {
-    ok: true,
-    state: {
-      snapshot: { loginStatus: "logged-out", usage: {} },
-      status: "sign-in-required",
-      dataCollectedAt: "2026-08-24T10:00:00.000Z"
-    }
+  harness.context.staleSignInSnapshot = {
+    loginStatus: "logged-out", usage: {}, codexAnalytics: { pageDetected: true }
   };
 
-  const result = await harness.run("markManualSignInRequired(staleSignInResult)");
+  const result = await harness.run("saveIncompleteRefresh(staleSignInSnapshot, 99)");
 
-  assert.equal(result.state.status, "sign-in-required-manual-refresh");
+  assert.equal(result.state.status, "sign-in-required");
   assert.deepEqual(result.state.snapshot, newerSnapshot);
   assert.equal(result.state.dataCollectedAt, "2026-08-24T10:05:00.000Z");
   assert.equal(result.state.lastRefreshAt, "2026-08-24T10:05:00.000Z");
@@ -2172,10 +2253,10 @@ test("a periodic logged-out refresh verifies sign-in without touching the open p
   const result = await harness.run('refreshOnce("alarm")');
 
   assert.equal(result.ok, true);
-  assert.equal(result.state.status, "sign-in-required-manual-refresh");
+  assert.equal(result.state.status, "sign-in-required");
   assert.equal(harness.calls.create, 1);
   assert.equal(harness.calls.update, 0);
-  assert.deepEqual(harness.calls.removedTabIds, [99]);
+  assert.deepEqual(harness.calls.removedTabIds, []);
   assert.equal(harness.getOpenTabs().find((tab) => tab.id === 42).active, true);
 });
 
@@ -2222,8 +2303,8 @@ test("a popup joining an alarm keeps the older retained sign-in tab", async () =
   const results = await harness.run('Promise.all([refreshOnce("alarm"), refreshForPopup()])');
 
   assert.equal(results[1].state.status, "sign-in-required");
-  assert.equal(harness.calls.create, 1);
-  assert.deepEqual(harness.calls.removedTabIds, [99]);
+  assert.equal(harness.calls.create, 0);
+  assert.deepEqual(harness.calls.removedTabIds, []);
   assert.equal(harness.sessionStorage[ChatGPTUsageConfig.storageKeys.retainedSignInTab], 42);
   assert.equal(
     harness.getOpenTabs().filter((tab) => /settings\/analytics/.test(tab.url)).length,
@@ -2268,7 +2349,7 @@ test("adopting an older retained tab during replacement preserves it as user-own
   assert.equal(harness.getOpenTabs().some((tab) => tab.id === 99), true);
 });
 
-test("a popup joining during the scheduled sign-in write still keeps the temporary tab", async () => {
+test("a popup joining a scheduled sign-in refresh keeps the temporary tab", async () => {
   const harness = createBackgroundHarness({
     snapshot: {
       status: "ok",
@@ -2280,42 +2361,11 @@ test("a popup joining during the scheduled sign-in write still keeps the tempora
       usage: {}
     }
   });
-  const originalSet = harness.context.chrome.storage.local.set;
-  const newerSnapshot = visibleSnapshot();
-  const newerCollectedState = {
-    snapshot: newerSnapshot,
-    status: "usage-current",
-    dataCollectedAt: "2026-08-24T10:05:00.000Z",
-    lastRefreshAt: "2026-08-24T10:05:00.000Z"
-  };
-  let releaseManualWrite;
-  let signalManualWrite;
-  const manualWriteStarted = new Promise((resolve) => { signalManualWrite = resolve; });
-  const manualWriteReleased = new Promise((resolve) => { releaseManualWrite = resolve; });
-  harness.context.chrome.storage.local.set = async (values) => {
-    const state = values[ChatGPTUsageConfig.storageKeys.state];
-    if (state && state.status === "sign-in-required-manual-refresh") {
-      signalManualWrite();
-      await manualWriteReleased;
-      await originalSet(values);
-      harness.storage[ChatGPTUsageConfig.storageKeys.state] = newerCollectedState;
-      return;
-    }
-    return originalSet(values);
-  };
-
-  const alarmResult = harness.run('refreshOnce("alarm")');
-  await manualWriteStarted;
-  const popupResult = harness.run("refreshForPopup()");
-  releaseManualWrite();
-  const results = await Promise.all([alarmResult, popupResult]);
+  const results = await harness.run('Promise.all([refreshOnce("alarm"), refreshForPopup()])');
 
   assert.equal(results[0].state.status, "sign-in-required");
   assert.equal(results[1].state.status, "sign-in-required");
   assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.state].status, "sign-in-required");
-  assert.deepEqual(harness.storage[ChatGPTUsageConfig.storageKeys.state].snapshot, newerSnapshot);
-  assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.state].dataCollectedAt, "2026-08-24T10:05:00.000Z");
-  assert.equal(results[0].state.lastRefreshAt, "2026-08-24T10:05:00.000Z");
   assert.equal(harness.calls.create, 1);
   assert.equal(harness.calls.update, 0);
   assert.equal(harness.calls.remove, 0);
@@ -2416,6 +2466,35 @@ test("a responsive Analytics page without new metrics is not reported as a failu
   assert.equal(harness.calls.createArgs[0].active, false);
   assert.equal(harness.calls.remove, 1);
 });
+
+for (const [label, usage] of [
+  ["credits-only", { codexCredits: { value: "Credits: 12", structured: { remainingCredits: 12 } } }],
+  ["unstructured limit text", { codex5h: { value: "5h limit: 45% remaining" } }]
+]) {
+  test(`${label} refresh preserves the last parsed limit and its timestamp`, async () => {
+    const cached = visibleSnapshot();
+    const lastRefreshAt = "2026-08-24T10:01:00.000Z";
+    const harness = createBackgroundHarness({
+      snapshot: {
+        ...cached,
+        collectedAt: "2026-08-24T10:10:00.000Z",
+        usage
+      },
+      initialState: {
+        snapshot: cached,
+        dataCollectedAt: cached.collectedAt,
+        lastRefreshAt
+      }
+    });
+
+    const result = await harness.run("refreshForPopup()");
+
+    assert.equal(result.state.status, "analytics-no-new-data");
+    assert.deepEqual(result.state.snapshot, cached);
+    assert.equal(result.state.dataCollectedAt, cached.collectedAt);
+    assert.equal(result.state.lastRefreshAt, lastRefreshAt);
+  });
+}
 
 test("manual refresh bypasses an open page without metrics for a fresh background page", async () => {
   const emptySnapshot = {

@@ -1,6 +1,8 @@
 {
-  "name": "codex-usage-viewer",
-  "version": "0.3.4",
+  "name": "chatgpt-usage-viewer",
+  "version": "0.5.1",
+  "author": "Teambotic Inc",
+  "homepage": "https://www.teambotics.app/",
   "description": "Local-only Chrome and Edge extension that shows visible ChatGPT/Codex usage information.",
   "license": "MIT",
   "private": true,
@@ -13,6 +15,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check background.js && node --check capacity-monitor.js && node --check content-script.js && node --check offscreen.js && node --check popup.js && node --check usage-model.js"
+    "check": "node --check background.js && node --check capacity-monitor.js && node --check content-script.js && node --check chat-badge.js && node --check offscreen.js && node --check popup.js && node --check usage-model.js",
+    "package:web-store": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-web-store.ps1"
   }
 }

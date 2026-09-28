@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Codex Usage Viewer</title>
+    <title>ChatGPT Usage Viewer</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -563,6 +563,25 @@
         text-align: right;
       }
 
+      .foot-credit {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.25;
+        text-align: right;
+      }
+
+      .foot-credit a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .foot-credit a:hover,
+      .foot-credit a:focus-visible {
+        text-decoration: underline;
+      }
+
       @media (max-width: 330px) {
         .status {
           grid-template-columns: 8px minmax(0, 1fr);
@@ -587,14 +606,14 @@
   <body>
     <div class="shell">
       <header>
-        <h1>Codex Usage Viewer</h1>
+        <h1>ChatGPT Usage Viewer</h1>
       </header>
 
       <div class="status" role="status">
         <span class="status-dot" aria-hidden="true"></span>
         <div class="status-copy">
           <strong id="statusTitle">Loading local data...</strong>
-          <span id="statusDetail">No external requests are used.</span>
+          <span id="statusDetail">Usage is stored locally in your browser.</span>
         </div>
       </div>
 
@@ -675,7 +694,9 @@
 
       <div class="foot">
         <span id="extensionVersion" aria-label="Extension version"></span>
-        <span class="foot-note">Local only. Not affiliated with OpenAI.</span>
+        <span class="foot-note">Local only. Not affiliated with OpenAI.
+          <span class="foot-credit">made with ❤️ by <a href="https://nikdesign.ca/" target="_blank" rel="noopener noreferrer">nikdesign.ca</a> and <a href="https://teambotics.app/" target="_blank" rel="noopener noreferrer">teambotics.app</a></span>
+        </span>
       </div>
     </div>
 

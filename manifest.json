@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Codex Usage Viewer",
-  "description": "Local-only browser extension that reads visible ChatGPT/Codex usage information from the current browser session.",
-  "version": "0.3.4",
+  "name": "ChatGPT Usage Viewer",
+  "description": "Shows Codex usage information visible in your ChatGPT session, with local refresh and alerts.",
+  "homepage_url": "https://www.teambotics.app/",
+  "version": "0.5.1",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -16,11 +17,10 @@
     "storage"
   ],
   "host_permissions": [
-    "https://chatgpt.com/*",
-    "https://chat.openai.com/*"
+    "https://chatgpt.com/*"
   ],
   "action": {
-    "default_title": "Codex Usage Viewer",
+    "default_title": "ChatGPT Usage Viewer",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -35,12 +35,24 @@
   "content_scripts": [
     {
       "matches": [
-        "https://chatgpt.com/*",
-        "https://chat.openai.com/*"
+        "https://chatgpt.com/codex/*/settings/analytics*",
+        "https://chatgpt.com/auth/*",
+        "https://chatgpt.com/login*",
+        "https://chatgpt.com/signin*"
       ],
       "js": [
         "usage-model.js",
         "content-script.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "usage-model.js",
+        "chat-badge.js"
       ],
       "run_at": "document_idle"
     }

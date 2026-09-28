@@ -13,6 +13,7 @@ const ANALYTICS_STABLE_READS_REQUIRED = 5;
 const ANALYTICS_MIN_READS_AFTER_FIRST_DATA = 13;
 const REFRESH_TIMEOUT_MS = 45000;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const LEGACY_MESSAGE_COUNTERS_KEY = "chatgptUsageMonitor.counters";
 const CAPACITY_NOTIFICATION_TYPES = Object.freeze(["low", "critical", "exhausted", "reset", "capacity-increased", "reset-changed"]);
 const ACTION_ICON_PATHS = Object.freeze({
   16: "icons/icon-16.png",
@@ -33,13 +34,14 @@ const adoptedAnalyticsTabIds = new Set();
 
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureRefreshAlarm();
-  const existing = await chrome.storage.local.get([storageKeys.counters]);
-  await chrome.storage.local.set({
-    [storageKeys.counters]: existing[storageKeys.counters]
-      ? ChatGPTUsageModel.normalizeCounters(existing[storageKeys.counters])
-      : ChatGPTUsageModel.defaultCounters()
-  });
+  const existing = await chrome.storage.local.get([storageKeys.state]);
+  if (existing[storageKeys.state] && "counters" in existing[storageKeys.state]) {
+    const { counters: _legacyCounters, ...state } = existing[storageKeys.state];
+    await chrome.storage.local.set({ [storageKeys.state]: state });
+  }
+  await chrome.storage.local.remove(LEGACY_MESSAGE_COUNTERS_KEY);
   await initializeCapacityUi();
+  return refreshWithTimeout("install");
 });
 
 chrome.runtime.onStartup.addListener(() => refreshOnStartup().catch(() => {}));
@@ -85,11 +87,6 @@ if (chrome.storage.onChanged && chrome.storage.onChanged.addListener) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
-  if (message.type === "usage:messageSent") {
-    recordLocalMessage(message.payload).then(sendResponse);
-    return true;
-  }
-
   if (message.type === "usage:contentSnapshot") {
     saveContentSnapshot(message.payload, sender.tab).then(sendResponse);
     return true;
@@ -113,13 +110,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-async function recordLocalMessage(payload) {
-  const data = await chrome.storage.local.get([storageKeys.counters]);
-  const counters = ChatGPTUsageModel.addLocalMessage(data[storageKeys.counters], payload);
-  await chrome.storage.local.set({ [storageKeys.counters]: counters });
-  return { ok: true };
-}
-
 async function saveSnapshot(
   snapshot,
   tab,
@@ -128,15 +118,17 @@ async function saveSnapshot(
   capacitySnapshot = snapshot,
   expectedAnalyticsRefreshGeneration = null
 ) {
-  const existing = await chrome.storage.local.get([storageKeys.state, storageKeys.counters]);
+  if (!ChatGPTUsageModel.hasParsedUsageLimit(snapshot)) {
+    return saveIncompleteRefresh(snapshot, tab && tab.id, source, expectedAnalyticsRefreshGeneration);
+  }
+  const existing = await chrome.storage.local.get([storageKeys.state]);
   assertCurrentAnalyticsRefresh(
     Number.isInteger(expectedAnalyticsRefreshGeneration)
       ? { generation: expectedAnalyticsRefreshGeneration }
       : null
   );
   const currentState = existing[storageKeys.state] || {};
-  const counters = ChatGPTUsageModel.normalizeCounters(existing[storageKeys.counters]);
-  const hasVisibleUsage = ChatGPTUsageModel.hasVisibleUsage(snapshot);
+  const hasVisibleUsage = ChatGPTUsageModel.hasParsedUsageLimit(snapshot);
   const collectedAt = snapshot && snapshot.collectedAt ? snapshot.collectedAt : new Date().toISOString();
   const acceptedCapacitySnapshot = hasVisibleUsage
     && (source === "requested-stable" || source === "requested-best-effort")
@@ -148,13 +140,12 @@ async function saveSnapshot(
       }
     : null;
   const nextState = {
-    ...currentState,
+    ...withoutLegacyMessageCounters(currentState),
     snapshot: {
       ...snapshot,
       tabId: tab && tab.id,
       source
     },
-    counters,
     status: hasVisibleUsage ? "usage-current" : "page-snapshot",
     dataCollectedAt: hasVisibleUsage ? collectedAt : currentState.dataCollectedAt,
     lastRefreshAt: hasVisibleUsage ? collectedAt : currentState.lastRefreshAt,
@@ -162,10 +153,7 @@ async function saveSnapshot(
       ? { confirmedCapacitySnapshot: acceptedCapacitySnapshot }
       : {})
   };
-  await chrome.storage.local.set({
-    [storageKeys.state]: nextState,
-    [storageKeys.counters]: counters
-  });
+  await chrome.storage.local.set({ [storageKeys.state]: nextState });
   assertCurrentAnalyticsRefresh(
     Number.isInteger(expectedAnalyticsRefreshGeneration)
       ? { generation: expectedAnalyticsRefreshGeneration }
@@ -185,7 +173,7 @@ async function saveContentSnapshot(snapshot, tab) {
   if (snapshot && snapshot.loginStatus === "logged-out") {
     await clearCapacityMonitorState();
   }
-  if (snapshot && snapshot.codexAnalytics && !snapshot.domUsageVisible) {
+  if (snapshot && snapshot.codexAnalytics && !ChatGPTUsageModel.hasParsedUsageLimit(snapshot)) {
     return { ok: true, ignored: true, reason: "Codex Analytics usage not visible yet." };
   }
   if (snapshot && !snapshot.codexAnalytics) {
@@ -203,17 +191,8 @@ async function saveContentSnapshot(snapshot, tab) {
 }
 
 async function getPopupState() {
-  const data = await chrome.storage.local.get([storageKeys.state, storageKeys.counters]);
-  const counters = ChatGPTUsageModel.normalizeCounters(data[storageKeys.counters]);
-  const state = data[storageKeys.state] || {};
-  const nextState = {
-    ...state,
-    counters
-  };
-  await chrome.storage.local.set({
-    [storageKeys.state]: nextState,
-    [storageKeys.counters]: counters
-  });
+  const data = await chrome.storage.local.get([storageKeys.state]);
+  const nextState = withoutLegacyMessageCounters(data[storageKeys.state] || {});
   if (!isSignedOutUsageState(nextState)) {
     await applyObservedCapacityVisual(nextState.snapshot);
   }
@@ -224,6 +203,11 @@ async function getPopupState() {
     paceSessionId: await getPaceSessionId(),
     paceTrackerVersion: CodexCapacityMonitor.PACE_TRACKER_VERSION
   };
+}
+
+function withoutLegacyMessageCounters(state) {
+  const { counters: _legacyCounters, ...usageState } = state;
+  return usageState;
 }
 
 async function refreshForPopup() {
@@ -354,7 +338,7 @@ async function refreshFromAnalyticsPage(reason, refreshContext = {
       // collect from an extension-owned background page below.
       await forgetRetainedSignInTab(activeAnalyticsTab.id);
     }
-    if (!analyticsTab && reason === "popup") {
+    if (!analyticsTab) {
       analyticsTab = await getRetainedSignInTab();
       if (analyticsTab) {
         temporaryTab = true;
@@ -386,15 +370,8 @@ async function refreshFromAnalyticsPage(reason, refreshContext = {
     }
 
     const temporaryTabRequiresSignIn = temporaryTab && result.pageLoginStatus === "logged-out";
-    const retainedSignInResult = temporaryTabRequiresSignIn ? result : null;
-    if (temporaryTabRequiresSignIn && !refreshContext.popupRequested) {
-      result = await markManualSignInRequired(result, refreshContext);
-    }
-    keepTemporaryTab = temporaryTabRequiresSignIn && refreshContext.popupRequested;
+    keepTemporaryTab = temporaryTabRequiresSignIn;
     refreshContext.acceptingPopupJoin = false;
-    if (keepTemporaryTab && result.state.status === "sign-in-required-manual-refresh") {
-      result = await restoreRetainedSignInRequired(retainedSignInResult, refreshContext);
-    }
     if (keepTemporaryTab) {
       if (temporaryTabWasActivated) {
         await forgetRetainedSignInTab(analyticsTab.id);
@@ -409,13 +386,12 @@ async function refreshFromAnalyticsPage(reason, refreshContext = {
     if (isStaleAnalyticsRefreshError(error)) {
       return { ok: false, ignored: true, reason: error.message };
     }
-    const data = await chrome.storage.local.get([storageKeys.state, storageKeys.counters]);
+    const data = await chrome.storage.local.get([storageKeys.state]);
     assertCurrentAnalyticsRefresh(refreshContext);
     const tabCreationFailed = failureStage === "create-temporary";
     const state = {
-      ...(data[storageKeys.state] || {}),
+      ...withoutLegacyMessageCounters(data[storageKeys.state] || {}),
       status: tabCreationFailed ? "codex-analytics-load-failed" : "content-script-unavailable",
-      counters: ChatGPTUsageModel.normalizeCounters(data[storageKeys.counters]),
       lastRefreshAttemptAt: new Date().toISOString(),
       diagnostic: tabCreationFailed
         ? "The extension could not create the temporary Codex Analytics tab."
@@ -581,39 +557,12 @@ async function readAnalyticsTab(tabId, refreshContext) {
   return requestSnapshotWithRetry(tabId, refreshContext);
 }
 
-async function markManualSignInRequired(result, refreshContext) {
-  const stored = await chrome.storage.local.get([storageKeys.state]);
-  assertCurrentAnalyticsRefresh(refreshContext);
-  const currentState = stored[storageKeys.state] || result.state;
-  const state = {
-    ...currentState,
-    status: "sign-in-required-manual-refresh",
-    diagnostic: "The scheduled background Analytics tab required sign-in and was closed."
-  };
-  await chrome.storage.local.set({ [storageKeys.state]: state });
-  return { ...result, state };
-}
-
-async function restoreRetainedSignInRequired(result, refreshContext) {
-  const stored = await chrome.storage.local.get([storageKeys.state]);
-  assertCurrentAnalyticsRefresh(refreshContext);
-  const currentState = stored[storageKeys.state] || result.state;
-  const state = {
-    ...currentState,
-    status: result.state.status,
-    diagnostic: result.state.diagnostic
-  };
-  await chrome.storage.local.set({ [storageKeys.state]: state });
-  return { ...result, state };
-}
-
 async function markRefreshStarted(reason, refreshContext) {
-  const data = await chrome.storage.local.get([storageKeys.state, storageKeys.counters]);
+  const data = await chrome.storage.local.get([storageKeys.state]);
   assertCurrentAnalyticsRefresh(refreshContext);
   const state = {
-    ...(data[storageKeys.state] || {}),
+    ...withoutLegacyMessageCounters(data[storageKeys.state] || {}),
     status: "refreshing-codex-analytics",
-    counters: ChatGPTUsageModel.normalizeCounters(data[storageKeys.counters]),
     lastRefreshAttemptAt: new Date().toISOString(),
     reason
   };
@@ -663,7 +612,8 @@ async function requestSnapshotWithRetry(tabId, refreshContext) {
           if (firstVisibleAttempt === null) firstVisibleAttempt = attempt;
 
           const readsSinceFirstData = attempt - firstVisibleAttempt + 1;
-          if (stableUsageReads >= ANALYTICS_STABLE_READS_REQUIRED
+          if (ChatGPTUsageModel.hasParsedUsageLimit(accumulatedSnapshot)
+            && stableUsageReads >= ANALYTICS_STABLE_READS_REQUIRED
             && readsSinceFirstData >= ANALYTICS_MIN_READS_AFTER_FIRST_DATA) {
             return saveSnapshot(
               accumulatedSnapshot,
@@ -751,7 +701,7 @@ async function saveIncompleteRefresh(
   source = "requested-no-new-usage",
   expectedAnalyticsRefreshGeneration = null
 ) {
-  const data = await chrome.storage.local.get([storageKeys.state, storageKeys.counters]);
+  const data = await chrome.storage.local.get([storageKeys.state]);
   assertCurrentAnalyticsRefresh(
     Number.isInteger(expectedAnalyticsRefreshGeneration)
       ? { generation: expectedAnalyticsRefreshGeneration }
@@ -760,12 +710,11 @@ async function saveIncompleteRefresh(
   const existingState = data[storageKeys.state] || {};
   const existingSnapshot = existingState.snapshot;
   const state = {
-    ...existingState,
-    snapshot: ChatGPTUsageModel.hasVisibleUsage(existingSnapshot)
+    ...withoutLegacyMessageCounters(existingState),
+    snapshot: ChatGPTUsageModel.hasParsedUsageLimit(existingSnapshot)
       ? existingSnapshot
       : { ...pageSnapshot, tabId, source },
     status: pageSnapshot.loginStatus === "logged-out" ? "sign-in-required" : "analytics-no-new-data",
-    counters: ChatGPTUsageModel.normalizeCounters(data[storageKeys.counters]),
     lastRefreshAttemptAt: new Date().toISOString(),
     diagnostic: pageSnapshot.codexAnalytics
       ? "Codex Analytics rendered, but no new visible usage values were detected yet."
@@ -1399,7 +1348,7 @@ async function withTimeout(
       analyticsRefreshContext = null;
       await expireCapacityMonitorState().catch(() => {});
     }
-    const data = await chrome.storage.local.get([storageKeys.state, storageKeys.counters]);
+    const data = await chrome.storage.local.get([storageKeys.state]);
     if (invalidatedRefreshGeneration !== null
       && invalidatedRefreshGeneration !== analyticsRefreshGeneration) {
       return {
@@ -1410,9 +1359,8 @@ async function withTimeout(
       };
     }
     const state = {
-      ...(data[storageKeys.state] || {}),
+      ...withoutLegacyMessageCounters(data[storageKeys.state] || {}),
       status: "refresh-timeout",
-      counters: ChatGPTUsageModel.normalizeCounters(data[storageKeys.counters]),
       lastRefreshAttemptAt: new Date().toISOString(),
       diagnostic: String(error && error.message ? error.message : error)
     };

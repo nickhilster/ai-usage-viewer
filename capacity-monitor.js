@@ -322,7 +322,7 @@
         badgeTextColor: getContrastingTextColor(badgeColor),
         counter: null,
         state: "normal",
-        title: "Codex Usage Viewer — usage unavailable"
+        title: "ChatGPT Usage Viewer — usage unavailable"
       };
     }
     const worst = available.reduce((selected, candidate) => (
@@ -340,7 +340,7 @@
       badgeTextColor: getContrastingTextColor(badgeColor),
       counter: worst,
       state,
-      title: `Codex Usage Viewer — ${worst.label}: ${worst.remainingPercent}% remaining`
+      title: `ChatGPT Usage Viewer — ${worst.label}: ${worst.remainingPercent}% remaining`
     };
   }
 

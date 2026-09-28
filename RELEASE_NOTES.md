@@ -4,7 +4,7 @@
 
 ### Highlights
 
-- First public release of Codex Usage Viewer.
+- First public release of ChatGPT Usage Viewer.
 - Local-only Chrome/Edge extension for visible ChatGPT/Codex usage information.
 - Designed for unpacked installation from this repository.
 

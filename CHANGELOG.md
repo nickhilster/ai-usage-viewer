@@ -4,6 +4,21 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+## 0.5.1 - 2026-09-28
+
+- Rename the extension to ChatGPT Usage Viewer across its UI, metadata, alerts, and store materials.
+
+## 0.5.0 - 2026-09-28
+
+- Add compact footer credits for nikdesign.ca and teambotics.app.
+- Save Teambotic Inc as the package author and prepare a Web Store upload bundle and submission drafts.
+
+## 0.4.0 - 2026-09-27
+
+- Show the remaining 5-hour Codex capacity as a compact badge on ChatGPT pages. Open the badge for weekly capacity and refresh details.
+- Remove local chat-message counting and its popup diagnostics while keeping Codex capacity monitoring and estimates.
+- Preserve signed-in recovery through the extension-owned Analytics tab, including scheduled refreshes, and keep usage data in local extension storage.
+
 ## 0.3.4 - 2026-09-14
 
 - Show an unavailable 5-hour limit as a compact row below the full-width weekly limit, without a disclosure. Keep available limits side by side.

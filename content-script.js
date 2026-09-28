@@ -2,8 +2,6 @@
   "use strict";
 
   const EXTRACTOR_VERSION = "codex-analytics-v7";
-  const SEND_COOLDOWN_MS = 1500;
-  let lastSendAt = 0;
   let snapshotTimer = null;
   let lastSnapshotSignature = null;
 
@@ -14,13 +12,7 @@
     return false;
   });
 
-  document.addEventListener("submit", (event) => {
-    const form = event.target instanceof HTMLFormElement ? event.target : null;
-    if (!form || !isComposerForm(form)) return;
-    recordMessageSent();
-  }, true);
-
-  scheduleSnapshotDelivery(1200);
+  if (isCodexAnalyticsUsagePage()) scheduleSnapshotDelivery(1200);
   observeAnalyticsChanges();
 
   function observeAnalyticsChanges() {
@@ -49,26 +41,16 @@
     }, delayMs);
   }
 
-  function recordMessageSent() {
-    const now = Date.now();
-    if (now - lastSendAt < SEND_COOLDOWN_MS) return;
-    lastSendAt = now;
-    chrome.runtime.sendMessage({
-      type: "usage:messageSent",
-      payload: {
-        modelLabel: detectModelLabel(),
-        pageKind: detectPageKind()
-      }
-    }).catch(() => {});
-  }
-
   function collectSnapshot() {
-    const analyticsDom = isCodexAnalyticsUsagePage() ? collectCodexAnalyticsDom() : null;
+    const onAnalyticsPage = isCodexAnalyticsUsagePage();
+    const analyticsDom = onAnalyticsPage ? collectCodexAnalyticsDom() : null;
     const safeText = collectSafeUiText();
-    const sessionSignals = collectSessionSignals(safeText);
-    const loginStatus = detectLoginStatus(safeText, sessionSignals);
+    const sessionSignals = onAnalyticsPage ? collectSessionSignals(safeText) : {};
+    const loginStatus = onAnalyticsPage
+      ? detectLoginStatus(safeText, sessionSignals)
+      : /\/(auth|login|signin)(\/|$)/i.test(location.pathname) ? "logged-out" : "unknown";
     const plan = detectPlan(safeText);
-    const fallbackUsage = extractUsage(safeText);
+    const fallbackUsage = onAnalyticsPage ? extractUsage(safeText) : {};
     const structuredUsage = analyticsDom && analyticsDom.text
       ? extractUsage(analyticsDom.text)
       : null;
@@ -76,7 +58,7 @@
     const diagnosticText = analyticsDom && analyticsDom.text
       ? `${analyticsDom.text}\n${safeText}`
       : safeText;
-    const codexAnalytics = isCodexAnalyticsUsagePage()
+    const codexAnalytics = onAnalyticsPage
       ? collectCodexAnalyticsDiagnostics(diagnosticText, usage, analyticsDom)
       : null;
 
@@ -88,7 +70,7 @@
       loginStatus,
       sessionSignals,
       plan,
-      modelLabel: detectModelLabel(),
+      modelLabel: null,
       usage,
       extractorVersion: EXTRACTOR_VERSION,
       domUsageVisible: Object.values(usage).some((field) => field && field.value),
@@ -99,6 +81,7 @@
   }
 
   function collectSafeUiText() {
+    if (!isCodexAnalyticsUsagePage()) return "";
     const selectors = [
       "header",
       '[role="menu"]',
@@ -342,14 +325,6 @@
     return { value: null, confidence: "unavailable" };
   }
 
-  function detectModelLabel() {
-    const candidates = Array.from(document.querySelectorAll("button, [role='button'], [aria-haspopup='menu']"))
-      .filter((element) => !isInsideConversation(element))
-      .map(getElementText)
-      .filter((text) => /(gpt|codex|thinking|reasoning)/i.test(text));
-    return candidates[0] || null;
-  }
-
   function detectPageKind() {
     const path = location.pathname.toLowerCase();
     if (path.includes("codex")) return "codex";
@@ -456,27 +431,6 @@
       if (!field.value) warnings.push(`${key}: Usage not exposed by ChatGPT UI.`);
     }
     return warnings;
-  }
-
-  function isComposerForm(form) {
-    if (isInsideConversation(form)) return false;
-    const input = form.querySelector([
-      'textarea',
-      '[contenteditable="true"]',
-      '#prompt-textarea',
-      '[data-testid*="prompt"]',
-      '[data-placeholder*="Message" i]',
-      '[aria-label*="Message" i]',
-      '[aria-label*="Ask" i]'
-    ].join(","));
-    const sendButton = form.querySelector([
-      '[data-testid*="send"]',
-      'button[aria-label*="Send" i]',
-      'button[aria-label*="Enviar" i]',
-      'button[aria-label*="Submit" i]',
-      'button[type="submit"]'
-    ].join(","));
-    return Boolean(input || sendButton);
   }
 
   function isCodexAnalyticsUsagePage() {

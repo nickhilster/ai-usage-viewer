@@ -12,6 +12,18 @@ test("configuration provides the retained sign-in tab key", () => {
   );
 });
 
+test("configuration no longer exposes chat-message counters", () => {
+  assert.equal("counters" in ChatGPTUsageConfig.storageKeys, false);
+});
+
+test("a current limit requires a parsed 5-hour or weekly percentage", () => {
+  const hasLimit = ChatGPTUsageModel.hasParsedUsageLimit;
+  assert.equal(hasLimit({ usage: { codexCredits: { structured: { remainingCredits: 12 } } } }), false);
+  assert.equal(hasLimit({ usage: { codex5h: { value: "45% remaining" } } }), false);
+  assert.equal(hasLimit({ usage: { codex5h: { structured: { remainingPercent: 0 } } } }), true);
+  assert.equal(hasLimit({ usage: { codexWeekly: { structured: { remainingPercent: 80 } } } }), true);
+});
+
 test("refresh interval supports every whole minute from 1 to 60 and defaults to 15", () => {
   assert.equal(
     ChatGPTUsageConfig.storageKeys.refreshPeriodMinutes,
