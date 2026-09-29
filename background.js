@@ -1,4 +1,4 @@
-importScripts("usage-model.js", "capacity-monitor.js");
+importScripts("usage-model.js", "providers.js", "capacity-monitor.js");
 
 const {
   storageKeys,

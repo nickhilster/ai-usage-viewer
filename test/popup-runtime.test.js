@@ -59,7 +59,7 @@ async function openPopup({ legacyBackground = false, paceTrackerVersion = CodexC
       storage: { local: { async get() { return {}; } }, onChanged: { addListener(fn) { onChange = fn; } } }
     }
   });
-  for (const file of ["usage-model.js", "capacity-monitor.js", "popup.js"]) {
+  for (const file of ["usage-model.js", "providers.js", "capacity-monitor.js", "popup.js"]) {
     vm.runInContext(readFileSync(join(__dirname, "..", file), "utf8"), context);
   }
   await new Promise((resolve) => setImmediate(resolve));

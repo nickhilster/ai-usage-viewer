@@ -6,6 +6,7 @@ const vm = require("node:vm");
 
 const { ChatGPTUsageConfig, ChatGPTUsageModel } = require("../usage-model.js");
 const { CodexCapacityMonitor } = require("../capacity-monitor.js");
+const { UsageProviders } = require("../providers.js");
 const backgroundSource = readFileSync(join(__dirname, "..", "background.js"), "utf8");
 const LEGACY_MESSAGE_COUNTERS_KEY = "chatgptUsageMonitor.counters";
 
@@ -208,6 +209,7 @@ function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null,
     ChatGPTUsageConfig,
     ChatGPTUsageModel,
     CodexCapacityMonitor,
+    UsageProviders,
     URL,
     chrome,
     clearTimeout,

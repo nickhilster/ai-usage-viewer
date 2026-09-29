@@ -3,6 +3,8 @@
 
   const usageModel = globalScope.ChatGPTUsageModel
     || (typeof require === "function" ? require("./usage-model.js").ChatGPTUsageModel : null);
+  const providers = globalScope.UsageProviders
+    || (typeof require === "function" ? require("./providers.js").UsageProviders : null);
 
   const DEFAULT_SETTINGS = Object.freeze({
     enableNotifications: true,
@@ -16,12 +18,15 @@
   const COUNTER_STALE_AFTER_MS = 35 * 60 * 1000;
   const PACE_WINDOW_MS = 2 * 60 * 60 * 1000;
   const PACE_MAX_GAP_MS = 90 * 60 * 1000;
-  const PACE_KEYS = ["codex5h", "codexWeekly"];
   const PACE_TRACKER_VERSION = 2;
-  const COUNTERS = Object.freeze([
-    { key: "codexWeekly", label: "Weekly usage" },
-    { key: "codex5h", label: "5-hour usage" }
-  ]);
+  function counters() {
+    return providers.allCounters().map(({ key, label }) => ({ key, label }));
+  }
+
+  function paceKeys() {
+    return providers.allCounters().map((counter) => counter.key);
+  }
+
   const SEVERITY = Object.freeze({ normal: 0, preventive: 1, warning: 2, critical: 3, exhausted: 4 });
   const BADGE_COLORS = Object.freeze({
     green: "#15803d",
@@ -45,12 +50,12 @@
 
   function normalizeMonitorState(raw) {
     const value = raw && typeof raw === "object" ? raw : {};
-    const counters = {};
-    for (const definition of COUNTERS) {
+    const normalizedCounters = {};
+    for (const definition of counters()) {
       const stored = value.counters && value.counters[definition.key];
       const remainingPercent = normalizePercent(stored && stored.remainingPercent);
       if (remainingPercent === null) continue;
-      counters[definition.key] = {
+      normalizedCounters[definition.key] = {
         remainingPercent,
         resetText: cleanResetText(stored.resetText),
         sessionId: typeof stored.sessionId === "string" ? stored.sessionId : value.paceSessionId || null,
@@ -58,12 +63,12 @@
       };
     }
     const availableKeys = Array.isArray(value.availableKeys)
-      ? COUNTERS.map((definition) => definition.key)
-        .filter((key) => value.availableKeys.includes(key) && counters[key])
+      ? counters().map((definition) => definition.key)
+        .filter((key) => value.availableKeys.includes(key) && normalizedCounters[key])
       : [];
     return {
       version: 2,
-      counters,
+      counters: normalizedCounters,
       pace: normalizePace(value.pace),
       paceSessionId: typeof value.paceSessionId === "string" ? value.paceSessionId : null,
       availableKeys,
@@ -73,7 +78,7 @@
 
   function extractAvailableCounters(snapshot) {
     const usage = snapshot && snapshot.usage && typeof snapshot.usage === "object" ? snapshot.usage : {};
-    return COUNTERS.flatMap((definition) => {
+    return counters().flatMap((definition) => {
       const field = usage[definition.key];
       const remainingPercent = readRemainingPercent(field);
       if (remainingPercent === null) return [];
@@ -94,7 +99,7 @@
     if (upgradingPace) {
       // Older versions kept one confirmed observation per counter. Preserve it
       // as the first rate sample instead of discarding it during the upgrade.
-      for (const key of PACE_KEYS) {
+      for (const key of paceKeys()) {
         const stored = previous.counters[key];
         if (stored && isFreshObservation(stored, now)) {
           previous.pace[key] = [{ at: Date.parse(stored.lastSeenAt), remainingPercent: stored.remainingPercent }];
@@ -149,7 +154,7 @@
   }
 
   function normalizePace(raw) {
-    return Object.fromEntries(PACE_KEYS.map((key) => {
+    return Object.fromEntries(paceKeys().map((key) => {
       const samples = raw && Array.isArray(raw[key]) ? raw[key] : [];
       return [key, samples.slice(-121).filter((sample) => sample
         && Number.isFinite(sample.at)
@@ -164,7 +169,7 @@
 
   function updatePace(available, previous, now, sameSession) {
     const pace = normalizePace(previous);
-    for (const key of PACE_KEYS) {
+    for (const key of paceKeys()) {
       const counter = available.find((item) => item.key === key);
       if (!counter || !Number.isFinite(now)) {
         pace[key] = [];
@@ -226,12 +231,13 @@
 
   function proportionalEstimate(key, remainingPercent) {
     if (remainingPercent === 0) return { status: "exhausted" };
-    const windowMs = key === "codex5h" ? 5 * 3600000 : 7 * 24 * 3600000;
+    const definition = providers.counterDefinition(key);
+    const windowMs = definition ? definition.windowMs : 7 * 24 * 3600000;
     return { status: "nominal", durationMs: remainingPercent / 100 * windowMs };
   }
 
   function estimateDisplayedTimeRemaining(rawPace, key, remainingPercent, observedAt, now = Date.now(), sameSession = true) {
-    if (!PACE_KEYS.includes(key) || normalizePercent(remainingPercent) === null
+    if (!paceKeys().includes(key) || normalizePercent(remainingPercent) === null
       || !Number.isFinite(observedAt) || observedAt > now
       || now - observedAt > COUNTER_STALE_AFTER_MS) return { status: "unavailable" };
     const measured = estimateTimeRemaining(rawPace, key, remainingPercent, now, sameSession);
@@ -267,7 +273,8 @@
   }
 
   function formatPaceTooltip(estimate, key) {
-    const limit = key === "codexWeekly" ? "weekly" : "5-hour";
+    const definition = providers.counterDefinition(key);
+    const limit = definition ? definition.limitName : "usage";
     if (estimate.status === "reload-required") {
       return `Reload to track ${limit} usage.`;
     }
@@ -283,7 +290,7 @@
 
   function extractFreshStateCounters(rawState, now = new Date().toISOString()) {
     const state = normalizeMonitorState(rawState);
-    return COUNTERS.flatMap((definition) => {
+    return counters().flatMap((definition) => {
       const stored = state.counters[definition.key];
       if (!state.availableKeys.includes(definition.key) || !stored || !isFreshObservation(stored, now)) return [];
       return [{ ...definition, ...stored }];
@@ -467,7 +474,7 @@
   const api = {
     BADGE_COLORS,
     COUNTER_STALE_AFTER_MS,
-    COUNTERS,
+    get COUNTERS() { return counters(); },
     DEFAULT_SETTINGS,
     PREVENTIVE_THRESHOLD,
     PACE_TRACKER_VERSION,
