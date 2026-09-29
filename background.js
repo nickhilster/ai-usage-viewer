@@ -23,6 +23,7 @@ const ACTION_ICON_PATHS = Object.freeze({
 let analyticsRefreshPromise = null;
 let analyticsRefreshContext = null;
 let analyticsRefreshGeneration = 0;
+let refreshLockWaiters = [];
 let retainedSignInTabUpdate = Promise.resolve();
 let paceSessionPromise = null;
 let capacityUpdate = Promise.resolve();
@@ -253,7 +254,30 @@ function shouldRefreshUsage(
     || now - collectedAt >= maxAgeMs;
 }
 
+function isOtherProviderRefreshInFlight(provider) {
+  return Boolean(analyticsRefreshPromise && analyticsRefreshContext
+    && (analyticsRefreshContext.providerId || chatgptProvider.id) !== provider.id);
+}
+
+function notifyRefreshLockReleased() {
+  const waiters = refreshLockWaiters;
+  refreshLockWaiters = [];
+  for (const wake of waiters) wake();
+}
+
+async function waitForOtherProviderRefresh(provider) {
+  while (isOtherProviderRefreshInFlight(provider)) {
+    await Promise.race([
+      analyticsRefreshPromise.catch(() => {}),
+      new Promise((resolve) => refreshLockWaiters.push(resolve))
+    ]);
+  }
+}
+
 function refreshWithTimeout(reason, provider = chatgptProvider) {
+  if (isOtherProviderRefreshInFlight(provider)) {
+    return waitForOtherProviderRefresh(provider).then(() => refreshWithTimeout(reason, provider));
+  }
   const refreshPromise = refreshOnce(reason, true, provider);
   const expectedRefreshGeneration = analyticsRefreshContext
     && analyticsRefreshContext.generation;
@@ -286,14 +310,11 @@ async function openUsagePage(provider = chatgptProvider) {
 }
 
 async function refreshOnce(reason, boundRetry = false, provider = chatgptProvider) {
-  if (analyticsRefreshPromise && analyticsRefreshContext
-    && (analyticsRefreshContext.providerId || chatgptProvider.id) !== provider.id) {
+  if (isOtherProviderRefreshInFlight(provider)) {
     // Refreshes are single-flight. Never join another provider's read; run after it.
-    const inFlight = analyticsRefreshPromise;
-    return inFlight.then(
-      () => refreshOnce(reason, boundRetry, provider),
-      () => refreshOnce(reason, boundRetry, provider)
-    );
+    return waitForOtherProviderRefresh(provider).then(() => (
+      boundRetry ? refreshWithTimeout(reason, provider) : refreshOnce(reason, false, provider)
+    ));
   }
   if (!analyticsRefreshPromise) {
     analyticsRefreshGeneration += 1;
@@ -308,6 +329,7 @@ async function refreshOnce(reason, boundRetry = false, provider = chatgptProvide
         if (analyticsRefreshPromise === trackedRefreshPromise) {
           analyticsRefreshPromise = null;
           analyticsRefreshContext = null;
+          notifyRefreshLockReleased();
         }
       });
     analyticsRefreshPromise = trackedRefreshPromise;
@@ -1371,6 +1393,7 @@ async function withTimeout(
       invalidatedRefreshGeneration = analyticsRefreshGeneration;
       analyticsRefreshPromise = null;
       analyticsRefreshContext = null;
+      notifyRefreshLockReleased();
       await expireCapacityMonitorState().catch(() => {});
     }
     const data = await chrome.storage.local.get([provider.stateKey]);

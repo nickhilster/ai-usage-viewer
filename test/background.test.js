@@ -2736,6 +2736,7 @@ test("a second provider refreshes from its own URL and never touches ChatGPT sta
     assert.equal(saved.status, "usage-current");
     assert.equal(saved.snapshot.usage["fake:session"].structured.remainingPercent, 60);
     assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.state].marker, "chatgpt-untouched");
+    assert.deepEqual(harness.storage[ChatGPTUsageConfig.storageKeys.state], chatgptState);
     assert.equal(
       harness.storage[ChatGPTUsageConfig.storageKeys.capacityState].counters["fake:session"].remainingPercent,
       60
@@ -2756,5 +2757,27 @@ test("a refresh for one provider waits for an in-flight refresh of another inste
     const result = await pending;
     assert.equal(result.ok, true);
     assert.equal(harness.calls.createArgs[0].url, "https://fake.example/usage");
+  });
+});
+
+test("a refresh queued behind a hung refresh of another provider runs after that refresh's owner times out, with its own generation", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const harness = createBackgroundHarness({
+      deferRefreshTimeout: true,
+      snapshot: fakeSnapshot(60, new Date().toISOString())
+    });
+    const initialChatgptState = harness.storage[ChatGPTUsageConfig.storageKeys.state];
+    harness.run(`analyticsRefreshContext = { providerId: "chatgpt", popupRequested: false, acceptingPopupJoin: true, generation: analyticsRefreshGeneration };
+      analyticsRefreshPromise = new Promise(() => {});`);
+    const pending = harness.run(`refreshWithTimeout("popup", UsageProviders.getProvider("fake"))`);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.calls.create, 0, "the queued refresh must not start while the other provider is in flight");
+    harness.run(`analyticsRefreshGeneration += 1; analyticsRefreshPromise = null; analyticsRefreshContext = null; notifyRefreshLockReleased();`);
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(harness.calls.createArgs[0].url, "https://fake.example/usage");
+    assert.equal(harness.storage[fake.stateKey].status, "usage-current");
+    assert.equal(harness.storage[fake.stateKey].snapshot.usage["fake:session"].structured.remainingPercent, 60);
+    assert.deepEqual(harness.storage[ChatGPTUsageConfig.storageKeys.state], initialChatgptState);
   });
 });
