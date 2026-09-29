@@ -27,6 +27,13 @@
     return providers.allCounters().map((counter) => counter.key);
   }
 
+  function scopeKeysFor(providerId) {
+    const definitions = providers.allCounters();
+    return (providerId
+      ? definitions.filter((counter) => counter.providerId === providerId)
+      : definitions).map((counter) => counter.key);
+  }
+
   const SEVERITY = Object.freeze({ normal: 0, preventive: 1, warning: 2, critical: 3, exhausted: 4 });
   const BADGE_COLORS = Object.freeze({
     green: "#15803d",
@@ -90,16 +97,18 @@
     });
   }
 
-  function evaluateSnapshot(snapshot, previousState, rawSettings, now = new Date().toISOString(), paceSessionId = null) {
+  function evaluateSnapshot(snapshot, previousState, rawSettings, now = new Date().toISOString(), paceSessionId = null, options = {}) {
     const settings = normalizeSettings(rawSettings);
     const previous = normalizeMonitorState(previousState);
-    const available = extractAvailableCounters(snapshot);
+    const scopeKeys = scopeKeysFor(options && options.providerId);
+    const available = extractAvailableCounters(snapshot)
+      .filter((counter) => scopeKeys.includes(counter.key));
     const upgradingPace = previousState && previousState.pace === undefined
       && previousState.paceSessionId === undefined;
     if (upgradingPace) {
       // Older versions kept one confirmed observation per counter. Preserve it
       // as the first rate sample instead of discarding it during the upgrade.
-      for (const key of paceKeys()) {
+      for (const key of scopeKeys) {
         const stored = previous.counters[key];
         if (stored && isFreshObservation(stored, now)) {
           previous.pace[key] = [{ at: Date.parse(stored.lastSeenAt), remainingPercent: stored.remainingPercent }];
@@ -134,12 +143,24 @@
     const state = {
       version: 2,
       counters,
-      pace: updatePace(available, previous.pace, Date.parse(now), upgradingPace || previous.paceSessionId === paceSessionId),
+      pace: updatePace(available, previous.pace, Date.parse(now),
+        upgradingPace || previous.paceSessionId === paceSessionId, scopeKeys),
       paceSessionId,
-      availableKeys: available.map((counter) => counter.key),
+      availableKeys: [
+        ...previous.availableKeys.filter((key) => !scopeKeys.includes(key) && counters[key]),
+        ...available.map((counter) => counter.key)
+      ],
       updatedAt: now
     };
-    return { available, events, settings, state, visual: deriveVisualState(available, settings) };
+    // With several providers the toolbar shows the lowest remaining across all of
+    // them, so the visual must include the other providers' still-fresh counters.
+    const visualCounters = scopeKeys.length === paceKeys().length
+      ? available
+      : [
+        ...extractFreshStateCounters(state, now).filter((counter) => !scopeKeys.includes(counter.key)),
+        ...available
+      ];
+    return { available, events, settings, state, visual: deriveVisualState(visualCounters, settings) };
   }
 
   function hasResetChanged(previous, current, now) {
@@ -151,6 +172,21 @@
     const absolute = (text) => /\d{1,2}:\d{2}/.test(text);
     const tolerance = absolute(previous.resetText) && absolute(current.resetText) ? 0 : 60000;
     return Math.abs(after - before) > tolerance;
+  }
+
+  function removeProviderCounters(rawState, providerId, now = new Date().toISOString()) {
+    const previous = normalizeMonitorState(rawState);
+    const removed = scopeKeysFor(providerId);
+    const keep = (key) => !removed.includes(key);
+    return {
+      version: 2,
+      counters: Object.fromEntries(Object.entries(previous.counters).filter(([key]) => keep(key))),
+      pace: Object.fromEntries(Object.entries(previous.pace)
+        .map(([key, samples]) => [key, keep(key) ? samples : []])),
+      paceSessionId: previous.paceSessionId,
+      availableKeys: previous.availableKeys.filter(keep),
+      updatedAt: now
+    };
   }
 
   function normalizePace(raw) {
@@ -167,9 +203,9 @@
     }));
   }
 
-  function updatePace(available, previous, now, sameSession) {
+  function updatePace(available, previous, now, sameSession, keys = paceKeys()) {
     const pace = normalizePace(previous);
-    for (const key of paceKeys()) {
+    for (const key of keys) {
       const counter = available.find((item) => item.key === key);
       if (!counter || !Number.isFinite(now)) {
         pace[key] = [];
@@ -493,6 +529,7 @@
     extractFreshStateCounters,
     normalizeMonitorState,
     normalizeSettings,
+    removeProviderCounters,
     shouldNotify,
     shouldPlaySound
   };
