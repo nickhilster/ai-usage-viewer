@@ -5,6 +5,7 @@
     || (typeof require === "function" ? require("./usage-model.js").ChatGPTUsageModel : null);
   const providers = globalScope.UsageProviders
     || (typeof require === "function" ? require("./providers.js").UsageProviders : null);
+  if (!providers) throw new Error("providers.js must be loaded before capacity-monitor.js");
 
   const DEFAULT_SETTINGS = Object.freeze({
     enableNotifications: true,

@@ -2745,7 +2745,7 @@ test("a second provider refreshes from its own URL and never touches ChatGPT sta
   });
 });
 
-test("a refresh for one provider waits for an in-flight refresh of another instead of joining it", async () => {
+test("a refresh for one provider waits for an in-flight refresh of another instead of joining it", { timeout: 5000 }, async () => {
   await withFakeProviderAsync(async () => {
     const harness = createBackgroundHarness({ snapshot: fakeSnapshot(60, new Date().toISOString()) });
     harness.run(`analyticsRefreshContext = { providerId: "chatgpt", popupRequested: false, acceptingPopupJoin: true, generation: analyticsRefreshGeneration };
@@ -2760,7 +2760,7 @@ test("a refresh for one provider waits for an in-flight refresh of another inste
   });
 });
 
-test("a refresh queued behind a hung refresh of another provider runs after that refresh's owner times out, with its own generation", async () => {
+test("a refresh queued behind a hung refresh of another provider runs after that refresh's owner times out, with its own generation", { timeout: 5000 }, async () => {
   await withFakeProviderAsync(async (fake) => {
     const harness = createBackgroundHarness({
       deferRefreshTimeout: true,
@@ -2856,4 +2856,60 @@ test("staleness is checked per provider", async () => {
     await harness.run(`refreshIfStale("startup")`);
     assert.deepEqual(Array.from(harness.run("order")), [fake.id]);
   });
+});
+
+test("a provider's refresh timeout is recorded even when another provider's refresh starts meanwhile", { timeout: 5000 }, async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const harness = createBackgroundHarness({ deferRefreshTimeout: true, snapshot: visibleSnapshot() });
+    harness.run(`analyticsRefreshContext = { providerId: "fake", popupRequested: false, acceptingPopupJoin: true, generation: analyticsRefreshGeneration };
+      analyticsRefreshPromise = new Promise(() => {});`);
+    const expectedGeneration = harness.run("analyticsRefreshGeneration");
+    const queued = harness.run(`refreshWithTimeout("popup", UsageProviders.getProvider("chatgpt"))`);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.calls.create, 0, "the ChatGPT refresh must wait for the hung fake refresh");
+    const owner = await harness.run(`withTimeout(analyticsRefreshPromise, 1000, "Refresh timed out.", ${expectedGeneration}, UsageProviders.getProvider("fake"))`);
+    assert.notEqual(owner.ignored, true, "another provider's newer generation must not supersede the timed-out refresh");
+    assert.equal(owner.ok, false);
+    assert.equal(harness.storage[fake.stateKey].status, "refresh-timeout");
+    const queuedResult = await queued;
+    assert.equal(queuedResult.ok, true);
+    assert.equal(harness.calls.createArgs[0].url, "https://chatgpt.com/codex/cloud/settings/analytics");
+  });
+});
+
+test("a popup retry joined to one provider's refresh is not expired by another provider's newer generation", { timeout: 5000 }, async () => {
+  await withFakeProviderAsync(async () => {
+    const harness = createBackgroundHarness({ snapshot: visibleSnapshot() });
+    harness.run(`analyticsRefreshContext = { providerId: "chatgpt", popupRequested: false, acceptingPopupJoin: false, generation: analyticsRefreshGeneration };
+      analyticsRefreshPromise = new Promise((resolve) => { globalThis.finishChatgpt = () => resolve({ ok: true }); });`);
+    const joined = harness.run(`refreshOnce("popup", false, UsageProviders.getProvider("chatgpt"))`);
+    harness.run(`analyticsRefreshGeneration += 1;
+      generationOwners.set(analyticsRefreshGeneration, "fake");
+      analyticsRefreshPromise = null; analyticsRefreshContext = null; notifyRefreshLockReleased();`);
+    harness.run("finishChatgpt()");
+    const result = await joined;
+    assert.notEqual(result.ignored, true, result.reason);
+    assert.equal(result.ok, true);
+    assert.equal(harness.calls.createArgs[0].url, "https://chatgpt.com/codex/cloud/settings/analytics");
+  });
+});
+
+test("a popup retry is still expired by a newer generation of its own provider", { timeout: 5000 }, async () => {
+  const harness = createBackgroundHarness({ snapshot: visibleSnapshot() });
+  harness.run(`analyticsRefreshContext = { providerId: "chatgpt", popupRequested: false, acceptingPopupJoin: false, generation: analyticsRefreshGeneration };
+    analyticsRefreshPromise = new Promise((resolve) => { globalThis.finishChatgpt = () => resolve({ ok: true }); });`);
+  const joined = harness.run(`refreshOnce("popup", false, UsageProviders.getProvider("chatgpt"))`);
+  harness.run(`analyticsRefreshGeneration += 1; generationOwners.set(analyticsRefreshGeneration, "chatgpt");`);
+  harness.run("finishChatgpt()");
+  const result = await joined;
+  assert.equal(result.ignored, true);
+  assert.equal(harness.calls.create, 0);
+});
+
+test("clearing ChatGPT with only ChatGPT registered keeps global suppression", async () => {
+  const harness = createBackgroundHarness({});
+  await harness.run(`clearCapacityMonitorState(UsageProviders.getProvider("chatgpt"))`);
+  const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
+  assert.equal(state.suppressed, true);
+  assert.equal(harness.run("capacitySuppressed"), true);
 });

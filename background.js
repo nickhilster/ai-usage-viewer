@@ -24,6 +24,8 @@ let analyticsRefreshPromise = null;
 let analyticsRefreshContext = null;
 let analyticsRefreshGeneration = 0;
 let refreshLockWaiters = [];
+const GENERATION_OWNER_HISTORY = 64;
+const generationOwners = new Map(); // generation -> id of the provider that started or invalidated it
 let retainedSignInTabUpdate = Promise.resolve();
 let paceSessionPromise = null;
 let capacityUpdate = Promise.resolve();
@@ -282,6 +284,24 @@ function isOtherProviderRefreshInFlight(provider) {
     && (analyticsRefreshContext.providerId || chatgptProvider.id) !== provider.id);
 }
 
+function recordGenerationOwner(generation, provider) {
+  generationOwners.set(generation, provider.id);
+  for (const recorded of generationOwners.keys()) {
+    if (recorded < generation - GENERATION_OWNER_HISTORY) generationOwners.delete(recorded);
+  }
+}
+
+function isRefreshSuperseded(expectedGeneration, provider) {
+  if (analyticsRefreshGeneration < expectedGeneration) return true;
+  for (let g = expectedGeneration + 1; g <= analyticsRefreshGeneration; g += 1) {
+    const owner = generationOwners.get(g);
+    // Unowned bumps (tests / legacy code) and this provider's own newer generations
+    // supersede; a generation started by a different provider does not.
+    if (owner === undefined || owner === provider.id) return true;
+  }
+  return false;
+}
+
 function notifyRefreshLockReleased() {
   const waiters = refreshLockWaiters;
   refreshLockWaiters = [];
@@ -341,6 +361,7 @@ async function refreshOnce(reason, boundRetry = false, provider = chatgptProvide
   }
   if (!analyticsRefreshPromise) {
     analyticsRefreshGeneration += 1;
+    recordGenerationOwner(analyticsRefreshGeneration, provider);
     analyticsRefreshContext = {
       providerId: provider.id,
       popupRequested: reason === "popup",
@@ -360,7 +381,7 @@ async function refreshOnce(reason, boundRetry = false, provider = chatgptProvide
     if (!analyticsRefreshContext.acceptingPopupJoin) {
       const joinedGeneration = analyticsRefreshContext.generation;
       return analyticsRefreshPromise.then(() => (
-        joinedGeneration === analyticsRefreshGeneration
+        !isRefreshSuperseded(joinedGeneration, provider)
           ? boundRetry
             ? refreshWithTimeout("popup", provider)
             : refreshOnce("popup", false, provider)
@@ -1442,7 +1463,7 @@ async function withTimeout(
   } catch (error) {
     if (timedOut) {
       if (Number.isInteger(expectedRefreshGeneration)
-        && expectedRefreshGeneration !== analyticsRefreshGeneration) {
+        && isRefreshSuperseded(expectedRefreshGeneration, provider)) {
         const latest = await chrome.storage.local.get([provider.stateKey]);
         return {
           ok: false,
@@ -1452,6 +1473,7 @@ async function withTimeout(
         };
       }
       analyticsRefreshGeneration += 1;
+      recordGenerationOwner(analyticsRefreshGeneration, provider);
       invalidatedRefreshGeneration = analyticsRefreshGeneration;
       analyticsRefreshPromise = null;
       analyticsRefreshContext = null;
@@ -1460,7 +1482,7 @@ async function withTimeout(
     }
     const data = await chrome.storage.local.get([provider.stateKey]);
     if (invalidatedRefreshGeneration !== null
-      && invalidatedRefreshGeneration !== analyticsRefreshGeneration) {
+      && isRefreshSuperseded(invalidatedRefreshGeneration, provider)) {
       return {
         ok: false,
         ignored: true,
