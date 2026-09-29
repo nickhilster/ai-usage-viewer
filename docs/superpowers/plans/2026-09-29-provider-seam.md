@@ -1380,4 +1380,3 @@ Manual smoke test in a real browser (the vm harness cannot prove this): load the
 4. **Test totals.** `node --test` counts `test/helpers/fake-provider.js` as one extra test, so every plan checkpoint is +1. Final `npm test` after the final fix wave: 239 pass, 0 fail (233 planned + 1 helper + fix-round and fix-wave regression tests).
 5. **Process.** Work was done in the git worktree at `C:/dev/Usage-Tracker-seam` on branch `feat/provider-seam` with local commits (controller Ruling 1), not the plan's "do not commit" rule; commands ran from that directory.
 6. **`paceKeys()` order** is registry order (`codexWeekly`, `codex5h`), not the old `PACE_KEYS` order.
-
