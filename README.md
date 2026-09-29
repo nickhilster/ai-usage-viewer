@@ -171,6 +171,7 @@ package.json
 manifest.json
 popup.html
 popup.js
+providers.js
 test/
 usage-model.js
 README.md
