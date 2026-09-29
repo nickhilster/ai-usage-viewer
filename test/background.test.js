@@ -2781,3 +2781,79 @@ test("a refresh queued behind a hung refresh of another provider runs after that
     assert.deepEqual(harness.storage[ChatGPTUsageConfig.storageKeys.state], initialChatgptState);
   });
 });
+
+test("signing out of one provider preserves the other provider's capacity counters", async () => {
+  await withFakeProviderAsync(async () => {
+    const seen = new Date().toISOString();
+    const harness = createBackgroundHarness({
+      capacityState: {
+        version: 2,
+        counters: {
+          codexWeekly: { remainingPercent: 80, resetText: null, sessionId: "test-session", lastSeenAt: seen },
+          "fake:session": { remainingPercent: 30, resetText: null, sessionId: "test-session", lastSeenAt: seen }
+        },
+        pace: { codexWeekly: [], codex5h: [], "fake:session": [] },
+        paceSessionId: "test-session",
+        availableKeys: ["codexWeekly", "fake:session"],
+        updatedAt: seen
+      }
+    });
+    await harness.run(`clearCapacityMonitorState(UsageProviders.getProvider("fake"))`);
+    const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
+    assert.equal(state.suppressed, undefined);
+    assert.deepEqual(Object.keys(state.counters), ["codexWeekly"]);
+    assert.deepEqual(Array.from(state.availableKeys), ["codexWeekly"]);
+    assert.equal(harness.run("capacitySuppressed"), false);
+  });
+});
+
+test("clearing the only provider keeps the existing global suppression behavior", async () => {
+  const harness = createBackgroundHarness({});
+  await harness.run("clearCapacityMonitorState()");
+  const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
+  assert.equal(state.suppressed, true);
+  assert.equal(harness.run("capacitySuppressed"), true);
+});
+
+test("a provider refresh does not reset another provider's pace history", async () => {
+  await withFakeProviderAsync(async () => {
+    const seen = new Date(Date.now() - 5 * 60000).toISOString();
+    const harness = createBackgroundHarness({
+      snapshot: fakeSnapshot(60, new Date().toISOString()),
+      capacityState: {
+        version: 2,
+        counters: { codexWeekly: { remainingPercent: 80, resetText: null, sessionId: "test-session", lastSeenAt: seen } },
+        pace: { codexWeekly: [{ at: Date.parse(seen), remainingPercent: 80 }], codex5h: [], "fake:session": [] },
+        paceSessionId: "test-session",
+        availableKeys: ["codexWeekly"],
+        updatedAt: seen
+      }
+    });
+    await harness.run(`refreshOnce("popup", false, UsageProviders.getProvider("fake"))`);
+    const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
+    assert.equal(state.pace.codexWeekly.length, 1);
+    assert.deepEqual(Array.from(state.availableKeys).sort(), ["codexWeekly", "fake:session"]);
+  });
+});
+
+test("scheduled refreshes visit every provider one at a time", async () => {
+  await withFakeProviderAsync(async () => {
+    const harness = createBackgroundHarness({});
+    harness.run(`var order = [];
+      refreshWithTimeout = async (reason, provider) => { order.push(reason + ":" + provider.id); return { ok: true }; };`);
+    harness.listeners.alarm({ name: ChatGPTUsageConfig.refreshAlarmName });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(Array.from(harness.run("order")), ["alarm:chatgpt", "alarm:fake"]);
+  });
+});
+
+test("staleness is checked per provider", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const fresh = new Date().toISOString();
+    const harness = createBackgroundHarness({ initialState: { dataCollectedAt: fresh, status: "usage-current" } });
+    harness.run(`var order = [];
+      refreshWithTimeout = async (reason, provider) => { order.push(provider.id); return { ok: true }; };`);
+    await harness.run(`refreshIfStale("startup")`);
+    assert.deepEqual(Array.from(harness.run("order")), [fake.id]);
+  });
+});

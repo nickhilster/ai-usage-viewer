@@ -42,7 +42,8 @@ chrome.runtime.onInstalled.addListener(async () => {
   }
   await chrome.storage.local.remove(LEGACY_MESSAGE_COUNTERS_KEY);
   await initializeCapacityUi();
-  return refreshWithTimeout("install");
+  const results = await refreshAllProviders("install");
+  return results[chatgptProvider.id];
 });
 
 chrome.runtime.onStartup.addListener(() => refreshOnStartup().catch(() => {}));
@@ -54,7 +55,7 @@ chrome.windows.onCreated.addListener(
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === refreshAlarmName) {
-    refreshWithTimeout("alarm").catch(() => {});
+    refreshAllProviders("alarm").catch(() => {});
   }
 });
 
@@ -169,7 +170,8 @@ async function saveSnapshot(
     await processCapacitySnapshot(
       capacitySnapshot,
       expectedCapacityGeneration,
-      expectedAnalyticsRefreshGeneration
+      expectedAnalyticsRefreshGeneration,
+      provider
     ).catch(() => {});
   }
   return { ok: true, state: nextState, pageLoginStatus: snapshot && snapshot.loginStatus };
@@ -177,7 +179,7 @@ async function saveSnapshot(
 
 async function saveContentSnapshot(snapshot, tab, provider = chatgptProvider) {
   if (snapshot && snapshot.loginStatus === "logged-out") {
-    await clearCapacityMonitorState();
+    await clearCapacityMonitorState(provider);
   }
   if (snapshot && provider.isUsagePageSnapshot(snapshot) && !provider.hasParsedUsageLimit(snapshot)) {
     return { ok: true, ignored: true, reason: "Codex Analytics usage not visible yet." };
@@ -226,19 +228,40 @@ async function refreshOnStartup(now = Date.now()) {
   return refreshIfStale("startup", null, now);
 }
 
+async function refreshAllProviders(reason) {
+  const results = {};
+  for (const provider of UsageProviders.listProviders()) {
+    results[provider.id] = await refreshWithTimeout(reason, provider).catch((error) => ({
+      ok: false,
+      error: String(error && error.message ? error.message : error)
+    }));
+  }
+  return results;
+}
+
 async function refreshIfStale(reason, state = null, now = Date.now()) {
-  let currentState = state;
+  const registered = UsageProviders.listProviders();
   const keys = [storageKeys.refreshPeriodMinutes];
-  if (!currentState) keys.push(storageKeys.state);
+  for (const provider of registered) {
+    if (!(state && provider.id === chatgptProvider.id)) keys.push(provider.stateKey);
+  }
   const data = await chrome.storage.local.get(keys);
-  if (!currentState) currentState = data[storageKeys.state];
   const refreshPeriodMinutes = ChatGPTUsageModel.normalizeRefreshPeriodMinutes(
     data[storageKeys.refreshPeriodMinutes]
   );
-  if (!shouldRefreshUsage(currentState, now, refreshPeriodMinutes)) {
+  const stale = registered.filter((provider) => {
+    const current = state && provider.id === chatgptProvider.id ? state : data[provider.stateKey];
+    return shouldRefreshUsage(current, now, refreshPeriodMinutes);
+  });
+  if (!stale.length) {
     return { ok: true, skipped: true, reason: "Usage data is still recent." };
   }
-  return refreshWithTimeout(reason);
+  let first = null;
+  for (const provider of stale) {
+    const result = await refreshWithTimeout(reason, provider);
+    if (first === null) first = result;
+  }
+  return first;
 }
 
 function shouldRefreshUsage(
@@ -635,7 +658,7 @@ async function requestSnapshotWithRetry(tabId, refreshContext, provider = chatgp
         if (snapshot.loginStatus === "logged-out") {
           if (!observedLogout) {
             observedLogout = true;
-            await clearCapacityMonitorState();
+            await clearCapacityMonitorState(provider);
             expectedCapacityGeneration = capacityGeneration;
           }
           accumulatedSnapshot = null;
@@ -768,7 +791,7 @@ async function saveIncompleteRefresh(
   };
   await chrome.storage.local.set({ [provider.stateKey]: state });
   if (pageSnapshot.loginStatus === "logged-out") {
-    await clearCapacityMonitorState();
+    await clearCapacityMonitorState(provider);
   } else {
     await expireCapacityMonitorState();
   }
@@ -842,18 +865,21 @@ function isFreshCapacitySnapshot(snapshot, now = Date.now()) {
 function processCapacitySnapshot(
   snapshot,
   expectedCapacityGeneration = capacityGeneration,
-  expectedAnalyticsRefreshGeneration = null
+  expectedAnalyticsRefreshGeneration = null,
+  provider = chatgptProvider
 ) {
   const result = capacityUpdate.then(
     () => processCapacitySnapshotSerialized(
       snapshot,
       expectedCapacityGeneration,
-      expectedAnalyticsRefreshGeneration
+      expectedAnalyticsRefreshGeneration,
+      provider
     ),
     () => processCapacitySnapshotSerialized(
       snapshot,
       expectedCapacityGeneration,
-      expectedAnalyticsRefreshGeneration
+      expectedAnalyticsRefreshGeneration,
+      provider
     )
   );
   capacityUpdate = result.catch(() => {});
@@ -906,7 +932,8 @@ function getPaceSessionId() {
 async function processCapacitySnapshotSerialized(
   snapshot,
   expectedCapacityGeneration,
-  expectedAnalyticsRefreshGeneration
+  expectedAnalyticsRefreshGeneration,
+  provider = chatgptProvider
 ) {
   if (expectedCapacityGeneration !== capacityGeneration) {
     return { ignored: true, reason: "Capacity session changed before processing." };
@@ -930,7 +957,8 @@ async function processCapacitySnapshotSerialized(
     data[storageKeys.capacityState],
     data[storageKeys.capacitySettings],
     new Date().toISOString(),
-    paceSessionId
+    paceSessionId,
+    { providerId: provider.id }
   );
   const storageUpdate = { [storageKeys.capacityState]: evaluation.state };
   await chrome.storage.local.set(storageUpdate);
@@ -1006,14 +1034,45 @@ function createSuppressedCapacityState() {
   };
 }
 
-function clearCapacityMonitorState() {
-  if (!markCapacitySuppressed()) return capacityUpdate;
+function isOnlyRegisteredProvider(provider) {
+  const registered = UsageProviders.listProviders();
+  return !provider || (registered.length === 1 && registered[0].id === provider.id);
+}
+
+function clearCapacityMonitorState(provider) {
+  if (isOnlyRegisteredProvider(provider)) {
+    if (!markCapacitySuppressed()) return capacityUpdate;
+    const result = capacityUpdate.then(
+      () => clearCapacityMonitorStateSerialized(),
+      () => clearCapacityMonitorStateSerialized()
+    );
+    capacityUpdate = result.catch(() => {});
+    return result;
+  }
+  // Other providers still have live readings: drop only this provider's state.
+  capacityGeneration += 1;
   const result = capacityUpdate.then(
-    () => clearCapacityMonitorStateSerialized(),
-    () => clearCapacityMonitorStateSerialized()
+    () => clearProviderCapacityStateSerialized(provider),
+    () => clearProviderCapacityStateSerialized(provider)
   );
   capacityUpdate = result.catch(() => {});
   return result;
+}
+
+async function clearProviderCapacityStateSerialized(provider) {
+  const data = await chrome.storage.local.get([
+    storageKeys.capacitySettings,
+    storageKeys.capacityState
+  ]);
+  const settings = CodexCapacityMonitor.normalizeSettings(data[storageKeys.capacitySettings]);
+  const rawState = data[storageKeys.capacityState];
+  const next = rawState && rawState.suppressed
+    ? rawState
+    : CodexCapacityMonitor.removeProviderCounters(rawState, provider.id);
+  await chrome.storage.local.set({ [storageKeys.capacityState]: next });
+  const remaining = next.suppressed ? [] : CodexCapacityMonitor.extractFreshStateCounters(next);
+  await applyCapacityVisual(CodexCapacityMonitor.deriveVisualState(remaining, settings));
+  await clearAllCapacityNotifications(provider);
 }
 
 function expireCapacityMonitorState() {
@@ -1129,9 +1188,12 @@ function clearCapacityNotification(counterKey, type) {
   });
 }
 
-async function clearAllCapacityNotifications() {
-  await Promise.all(CodexCapacityMonitor.COUNTERS.flatMap((counter) => (
-    CAPACITY_NOTIFICATION_TYPES.map((type) => clearCapacityNotification(counter.key, type))
+async function clearAllCapacityNotifications(provider) {
+  const keys = UsageProviders.allCounters()
+    .filter((counter) => !provider || counter.providerId === provider.id)
+    .map((counter) => counter.key);
+  await Promise.all(keys.flatMap((key) => (
+    CAPACITY_NOTIFICATION_TYPES.map((type) => clearCapacityNotification(key, type))
   )));
 }
 
