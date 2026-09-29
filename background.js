@@ -5,7 +5,7 @@ const {
   refreshAlarmName,
   refreshPeriodMinutes: defaultRefreshPeriodMinutes
 } = ChatGPTUsageConfig;
-const CODEX_ANALYTICS_URL = "https://chatgpt.com/codex/cloud/settings/analytics";
+const chatgptProvider = UsageProviders.getProvider("chatgpt");
 const ANALYTICS_LOAD_TIMEOUT_MS = 8000;
 const ANALYTICS_READ_ATTEMPTS = 25;
 const ANALYTICS_READ_INTERVAL_MS = 400;
@@ -60,13 +60,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.tabs.onActivated.addListener((activeInfo) => {
   if (activeInfo && Number.isInteger(activeInfo.tabId)) {
     adoptedAnalyticsTabIds.add(activeInfo.tabId);
-    forgetRetainedSignInTab(activeInfo.tabId).catch(() => {});
+    for (const provider of UsageProviders.listProviders()) {
+      forgetRetainedSignInTab(activeInfo.tabId, provider).catch(() => {});
+    }
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   adoptedAnalyticsTabIds.delete(tabId);
-  forgetRetainedSignInTab(tabId).catch(() => {});
+  for (const provider of UsageProviders.listProviders()) {
+    forgetRetainedSignInTab(tabId, provider).catch(() => {});
+  }
 });
 
 ensureRefreshAlarm().catch(() => {});
@@ -88,7 +92,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
   if (message.type === "usage:contentSnapshot") {
-    saveContentSnapshot(message.payload, sender.tab).then(sendResponse);
+    saveContentSnapshot(message.payload, sender.tab, providerForSender(sender)).then(sendResponse);
     return true;
   }
 
@@ -116,19 +120,20 @@ async function saveSnapshot(
   source,
   expectedCapacityGeneration = capacityGeneration,
   capacitySnapshot = snapshot,
-  expectedAnalyticsRefreshGeneration = null
+  expectedAnalyticsRefreshGeneration = null,
+  provider = chatgptProvider
 ) {
-  if (!ChatGPTUsageModel.hasParsedUsageLimit(snapshot)) {
-    return saveIncompleteRefresh(snapshot, tab && tab.id, source, expectedAnalyticsRefreshGeneration);
+  if (!provider.hasParsedUsageLimit(snapshot)) {
+    return saveIncompleteRefresh(snapshot, tab && tab.id, source, expectedAnalyticsRefreshGeneration, provider);
   }
-  const existing = await chrome.storage.local.get([storageKeys.state]);
+  const existing = await chrome.storage.local.get([provider.stateKey]);
   assertCurrentAnalyticsRefresh(
     Number.isInteger(expectedAnalyticsRefreshGeneration)
       ? { generation: expectedAnalyticsRefreshGeneration }
       : null
   );
-  const currentState = existing[storageKeys.state] || {};
-  const hasVisibleUsage = ChatGPTUsageModel.hasParsedUsageLimit(snapshot);
+  const currentState = existing[provider.stateKey] || {};
+  const hasVisibleUsage = provider.hasParsedUsageLimit(snapshot);
   const collectedAt = snapshot && snapshot.collectedAt ? snapshot.collectedAt : new Date().toISOString();
   const acceptedCapacitySnapshot = hasVisibleUsage
     && (source === "requested-stable" || source === "requested-best-effort")
@@ -153,7 +158,7 @@ async function saveSnapshot(
       ? { confirmedCapacitySnapshot: acceptedCapacitySnapshot }
       : {})
   };
-  await chrome.storage.local.set({ [storageKeys.state]: nextState });
+  await chrome.storage.local.set({ [provider.stateKey]: nextState });
   assertCurrentAnalyticsRefresh(
     Number.isInteger(expectedAnalyticsRefreshGeneration)
       ? { generation: expectedAnalyticsRefreshGeneration }
@@ -169,21 +174,21 @@ async function saveSnapshot(
   return { ok: true, state: nextState, pageLoginStatus: snapshot && snapshot.loginStatus };
 }
 
-async function saveContentSnapshot(snapshot, tab) {
+async function saveContentSnapshot(snapshot, tab, provider = chatgptProvider) {
   if (snapshot && snapshot.loginStatus === "logged-out") {
     await clearCapacityMonitorState();
   }
-  if (snapshot && snapshot.codexAnalytics && !ChatGPTUsageModel.hasParsedUsageLimit(snapshot)) {
+  if (snapshot && provider.isUsagePageSnapshot(snapshot) && !provider.hasParsedUsageLimit(snapshot)) {
     return { ok: true, ignored: true, reason: "Codex Analytics usage not visible yet." };
   }
-  if (snapshot && !snapshot.codexAnalytics) {
-    const existing = await chrome.storage.local.get([storageKeys.state]);
-    const currentSnapshot = existing[storageKeys.state] && existing[storageKeys.state].snapshot;
-    if (ChatGPTUsageModel.hasVisibleUsage(currentSnapshot)) {
+  if (snapshot && !provider.isUsagePageSnapshot(snapshot)) {
+    const existing = await chrome.storage.local.get([provider.stateKey]);
+    const currentSnapshot = existing[provider.stateKey] && existing[provider.stateKey].snapshot;
+    if (provider.hasVisibleUsage(currentSnapshot)) {
       return { ok: true, ignored: true, reason: "Preserved the last valid Codex Analytics snapshot." };
     }
   }
-  const result = await saveSnapshot(snapshot, tab, "content-script");
+  const result = await saveSnapshot(snapshot, tab, "content-script", capacityGeneration, snapshot, null, provider);
   if (tab && tab.active && snapshot && snapshot.loginStatus !== "logged-out") {
     await applyObservedCapacityVisual(snapshot);
   }
@@ -248,42 +253,57 @@ function shouldRefreshUsage(
     || now - collectedAt >= maxAgeMs;
 }
 
-function refreshWithTimeout(reason) {
-  const refreshPromise = refreshOnce(reason, true);
+function refreshWithTimeout(reason, provider = chatgptProvider) {
+  const refreshPromise = refreshOnce(reason, true, provider);
   const expectedRefreshGeneration = analyticsRefreshContext
     && analyticsRefreshContext.generation;
   return withTimeout(
     refreshPromise,
     REFRESH_TIMEOUT_MS,
     "Refresh timed out.",
-    expectedRefreshGeneration
+    expectedRefreshGeneration,
+    provider
   );
 }
 
 async function openCodexAnalyticsPage() {
-  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*"] });
-  const existing = tabs.find((tab) => isCodexAnalyticsUrl(tab.url));
+  return openUsagePage(chatgptProvider);
+}
+
+async function openUsagePage(provider = chatgptProvider) {
+  const tabs = await chrome.tabs.query({ url: [...provider.hostPatterns] });
+  const existing = tabs.find((tab) => provider.isUsageUrl(tab.url));
   if (existing) {
-    await forgetRetainedSignInTab(existing.id);
+    await forgetRetainedSignInTab(existing.id, provider);
     await chrome.tabs.update(existing.id, { active: true });
     if (Number.isInteger(existing.windowId) && chrome.windows && chrome.windows.update) {
       await chrome.windows.update(existing.windowId, { focused: true });
     }
     return { ok: true, tabId: existing.id, reused: true };
   }
-  const tab = await chrome.tabs.create({ url: CODEX_ANALYTICS_URL, active: true });
+  const tab = await chrome.tabs.create({ url: provider.usageUrl, active: true });
   return { ok: true, tabId: tab.id, reused: false };
 }
 
-async function refreshOnce(reason, boundRetry = false) {
+async function refreshOnce(reason, boundRetry = false, provider = chatgptProvider) {
+  if (analyticsRefreshPromise && analyticsRefreshContext
+    && (analyticsRefreshContext.providerId || chatgptProvider.id) !== provider.id) {
+    // Refreshes are single-flight. Never join another provider's read; run after it.
+    const inFlight = analyticsRefreshPromise;
+    return inFlight.then(
+      () => refreshOnce(reason, boundRetry, provider),
+      () => refreshOnce(reason, boundRetry, provider)
+    );
+  }
   if (!analyticsRefreshPromise) {
     analyticsRefreshGeneration += 1;
     analyticsRefreshContext = {
+      providerId: provider.id,
       popupRequested: reason === "popup",
       acceptingPopupJoin: true,
       generation: analyticsRefreshGeneration
     };
-    const trackedRefreshPromise = refreshFromAnalyticsPage(reason, analyticsRefreshContext)
+    const trackedRefreshPromise = refreshFromAnalyticsPage(reason, analyticsRefreshContext, provider)
       .finally(() => {
         if (analyticsRefreshPromise === trackedRefreshPromise) {
           analyticsRefreshPromise = null;
@@ -297,8 +317,8 @@ async function refreshOnce(reason, boundRetry = false) {
       return analyticsRefreshPromise.then(() => (
         joinedGeneration === analyticsRefreshGeneration
           ? boundRetry
-            ? refreshWithTimeout("popup")
-            : refreshOnce("popup")
+            ? refreshWithTimeout("popup", provider)
+            : refreshOnce("popup", false, provider)
           : { ok: false, ignored: true, reason: "Analytics refresh expired before retry." }
       ));
     }
@@ -310,10 +330,10 @@ async function refreshOnce(reason, boundRetry = false) {
 async function refreshFromAnalyticsPage(reason, refreshContext = {
   popupRequested: reason === "popup",
   generation: analyticsRefreshGeneration
-}) {
+}, provider = chatgptProvider) {
   const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const activeTab = activeTabs[0] || null;
-  const activeAnalyticsTab = activeTab && isCodexAnalyticsUrl(activeTab.url)
+  const activeAnalyticsTab = activeTab && provider.isUsageUrl(activeTab.url)
     ? activeTab
     : null;
   let analyticsTab = null;
@@ -336,37 +356,37 @@ async function refreshFromAnalyticsPage(reason, refreshContext = {
       // A long-lived Analytics page can keep rendering the values fetched when
       // it opened. Treat an active page as user-owned, leave it untouched, and
       // collect from an extension-owned background page below.
-      await forgetRetainedSignInTab(activeAnalyticsTab.id);
+      await forgetRetainedSignInTab(activeAnalyticsTab.id, provider);
     }
     if (!analyticsTab) {
-      analyticsTab = await getRetainedSignInTab();
+      analyticsTab = await getRetainedSignInTab(provider);
       if (analyticsTab) {
         temporaryTab = true;
         trackedTemporaryTabId = analyticsTab.id;
         failureStage = "read-temporary";
-        if (!isCodexAnalyticsUrl(analyticsTab.url)) {
+        if (!provider.isUsageUrl(analyticsTab.url)) {
           analyticsTab = await chrome.tabs.update(analyticsTab.id, {
-            url: CODEX_ANALYTICS_URL,
+            url: provider.usageUrl,
             active: false
           });
         }
       }
     }
 
-    await markRefreshStarted(reason, refreshContext);
+    await markRefreshStarted(reason, refreshContext, provider);
     if (!analyticsTab) {
-      analyticsTab = await createBackgroundAnalyticsTab();
+      analyticsTab = await createBackgroundAnalyticsTab(provider);
       temporaryTab = true;
       trackedTemporaryTabId = analyticsTab.id;
       failureStage = "read-temporary";
     }
 
-    let result = await readAnalyticsTab(analyticsTab.id, refreshContext);
+    let result = await readAnalyticsTab(analyticsTab.id, refreshContext, provider);
 
     assertCurrentAnalyticsRefresh(refreshContext);
 
     if (result.pageLoginStatus === "logged-in") {
-      await removeRetainedSignInTabIfOwned(analyticsTab.id);
+      await removeRetainedSignInTabIfOwned(analyticsTab.id, provider);
     }
 
     const temporaryTabRequiresSignIn = temporaryTab && result.pageLoginStatus === "logged-out";
@@ -374,9 +394,9 @@ async function refreshFromAnalyticsPage(reason, refreshContext = {
     refreshContext.acceptingPopupJoin = false;
     if (keepTemporaryTab) {
       if (temporaryTabWasActivated) {
-        await forgetRetainedSignInTab(analyticsTab.id);
+        await forgetRetainedSignInTab(analyticsTab.id, provider);
       } else {
-        const retainedTabId = await retainOnlySignInTab(analyticsTab.id);
+        const retainedTabId = await retainOnlySignInTab(analyticsTab.id, provider);
         keepTemporaryTab = retainedTabId === analyticsTab.id && !temporaryTabWasActivated;
       }
     }
@@ -386,24 +406,24 @@ async function refreshFromAnalyticsPage(reason, refreshContext = {
     if (isStaleAnalyticsRefreshError(error)) {
       return { ok: false, ignored: true, reason: error.message };
     }
-    const data = await chrome.storage.local.get([storageKeys.state]);
+    const data = await chrome.storage.local.get([provider.stateKey]);
     assertCurrentAnalyticsRefresh(refreshContext);
     const tabCreationFailed = failureStage === "create-temporary";
     const state = {
-      ...withoutLegacyMessageCounters(data[storageKeys.state] || {}),
+      ...withoutLegacyMessageCounters(data[provider.stateKey] || {}),
       status: tabCreationFailed ? "codex-analytics-load-failed" : "content-script-unavailable",
       lastRefreshAttemptAt: new Date().toISOString(),
       diagnostic: tabCreationFailed
-        ? "The extension could not create the temporary Codex Analytics tab."
-        : "The temporary Codex Analytics page did not respond after loading."
+        ? provider.messages.loadFailed
+        : provider.messages.readerUnresponsive
     };
-    await chrome.storage.local.set({ [storageKeys.state]: state });
+    await chrome.storage.local.set({ [provider.stateKey]: state });
     await expireCapacityMonitorState().catch(() => {});
     return { ok: false, state, error: String(error && error.message ? error.message : error) };
   } finally {
     try {
       if (temporaryTab && analyticsTab && !keepTemporaryTab) {
-        await forgetRetainedSignInTab(analyticsTab.id);
+        await forgetRetainedSignInTab(analyticsTab.id, provider);
         const currentTab = await chrome.tabs.get(analyticsTab.id).catch(() => null);
         const extensionStillOwnsTab = currentTab
           && !temporaryTabWasActivated
@@ -447,9 +467,9 @@ function serializeRetainedSignInTabUpdate(operation) {
   return result;
 }
 
-function getRetainedSignInTab() {
+function getRetainedSignInTab(provider = chatgptProvider) {
   return serializeRetainedSignInTabUpdate(async () => {
-    const retainedKey = storageKeys.retainedSignInTab;
+    const retainedKey = provider.retainedSignInTabKey;
     const stored = await chrome.storage.session.get([retainedKey]);
     const retainedTabId = stored[retainedKey];
     if (!Number.isInteger(retainedTabId)) return null;
@@ -476,9 +496,9 @@ function getRetainedSignInTab() {
   });
 }
 
-function retainOnlySignInTab(tabId) {
+function retainOnlySignInTab(tabId, provider = chatgptProvider) {
   return serializeRetainedSignInTabUpdate(async () => {
-    const retainedKey = storageKeys.retainedSignInTab;
+    const retainedKey = provider.retainedSignInTabKey;
     if (adoptedAnalyticsTabIds.has(tabId)) return null;
 
     const stored = await chrome.storage.session.get([retainedKey]);
@@ -504,18 +524,18 @@ function retainOnlySignInTab(tabId) {
   });
 }
 
-function forgetRetainedSignInTab(tabId) {
+function forgetRetainedSignInTab(tabId, provider = chatgptProvider) {
   return serializeRetainedSignInTabUpdate(async () => {
-    const retainedKey = storageKeys.retainedSignInTab;
+    const retainedKey = provider.retainedSignInTabKey;
     const stored = await chrome.storage.session.get([retainedKey]);
     if (stored[retainedKey] !== tabId) return;
     await chrome.storage.session.set({ [retainedKey]: null });
   });
 }
 
-function removeRetainedSignInTabIfOwned(exceptTabId) {
+function removeRetainedSignInTabIfOwned(exceptTabId, provider = chatgptProvider) {
   return serializeRetainedSignInTabUpdate(async () => {
-    const retainedKey = storageKeys.retainedSignInTab;
+    const retainedKey = provider.retainedSignInTabKey;
     const stored = await chrome.storage.session.get([retainedKey]);
     const retainedTabId = stored[retainedKey];
     if (!Number.isInteger(retainedTabId) || retainedTabId === exceptTabId) return;
@@ -533,14 +553,14 @@ function removeRetainedSignInTabIfOwned(exceptTabId) {
   });
 }
 
-async function createBackgroundAnalyticsTab() {
+async function createBackgroundAnalyticsTab(provider = chatgptProvider) {
   const activeTabsBeforeCreate = await chrome.tabs.query({
     active: true,
     lastFocusedWindow: true
   }).catch(() => []);
   const previouslyActiveTab = activeTabsBeforeCreate[0] || null;
   const createOptions = {
-    url: CODEX_ANALYTICS_URL,
+    url: provider.usageUrl,
     active: false
   };
   if (previouslyActiveTab && Number.isInteger(previouslyActiveTab.windowId)) {
@@ -551,25 +571,25 @@ async function createBackgroundAnalyticsTab() {
   return temporaryTab;
 }
 
-async function readAnalyticsTab(tabId, refreshContext) {
-  await waitForTabReadyOrDelay(tabId);
+async function readAnalyticsTab(tabId, refreshContext, provider = chatgptProvider) {
+  await waitForTabReadyOrDelay(tabId, provider);
   assertCurrentAnalyticsRefresh(refreshContext);
-  return requestSnapshotWithRetry(tabId, refreshContext);
+  return requestSnapshotWithRetry(tabId, refreshContext, provider);
 }
 
-async function markRefreshStarted(reason, refreshContext) {
-  const data = await chrome.storage.local.get([storageKeys.state]);
+async function markRefreshStarted(reason, refreshContext, provider = chatgptProvider) {
+  const data = await chrome.storage.local.get([provider.stateKey]);
   assertCurrentAnalyticsRefresh(refreshContext);
   const state = {
-    ...withoutLegacyMessageCounters(data[storageKeys.state] || {}),
+    ...withoutLegacyMessageCounters(data[provider.stateKey] || {}),
     status: "refreshing-codex-analytics",
     lastRefreshAttemptAt: new Date().toISOString(),
     reason
   };
-  await chrome.storage.local.set({ [storageKeys.state]: state });
+  await chrome.storage.local.set({ [provider.stateKey]: state });
 }
 
-async function requestSnapshotWithRetry(tabId, refreshContext) {
+async function requestSnapshotWithRetry(tabId, refreshContext, provider = chatgptProvider) {
   await capacityInitializationPromise;
   assertCurrentAnalyticsRefresh(refreshContext);
   let expectedCapacityGeneration = capacityGeneration;
@@ -604,15 +624,15 @@ async function requestSnapshotWithRetry(tabId, refreshContext) {
           continue;
         }
         updateStableCapacityCounters(snapshot, stableCapacityCounters);
-        if (snapshot.codexAnalytics && ChatGPTUsageModel.hasVisibleUsage(snapshot)) {
-          accumulatedSnapshot = mergeUsageSnapshot(accumulatedSnapshot, snapshot);
+        if (provider.isUsagePageSnapshot(snapshot) && provider.hasVisibleUsage(snapshot)) {
+          accumulatedSnapshot = mergeUsageSnapshot(accumulatedSnapshot, snapshot, provider);
           const signature = JSON.stringify(accumulatedSnapshot.usage || {});
           stableUsageReads = signature === lastUsageSignature ? stableUsageReads + 1 : 1;
           lastUsageSignature = signature;
           if (firstVisibleAttempt === null) firstVisibleAttempt = attempt;
 
           const readsSinceFirstData = attempt - firstVisibleAttempt + 1;
-          if (ChatGPTUsageModel.hasParsedUsageLimit(accumulatedSnapshot)
+          if (provider.hasParsedUsageLimit(accumulatedSnapshot)
             && stableUsageReads >= ANALYTICS_STABLE_READS_REQUIRED
             && readsSinceFirstData >= ANALYTICS_MIN_READS_AFTER_FIRST_DATA) {
             return saveSnapshot(
@@ -621,7 +641,8 @@ async function requestSnapshotWithRetry(tabId, refreshContext) {
               "requested-stable",
               expectedCapacityGeneration,
               buildStableCapacitySnapshot(accumulatedSnapshot, stableCapacityCounters),
-              refreshContext && refreshContext.generation
+              refreshContext && refreshContext.generation,
+              provider
             );
           }
         }
@@ -638,7 +659,8 @@ async function requestSnapshotWithRetry(tabId, refreshContext) {
       "requested-best-effort",
       expectedCapacityGeneration,
       buildStableCapacitySnapshot(accumulatedSnapshot, stableCapacityCounters),
-      refreshContext && refreshContext.generation
+      refreshContext && refreshContext.generation,
+      provider
     );
   }
   if (lastSnapshot) {
@@ -646,14 +668,15 @@ async function requestSnapshotWithRetry(tabId, refreshContext) {
       lastSnapshot,
       tabId,
       "requested-no-new-usage",
-      refreshContext && refreshContext.generation
+      refreshContext && refreshContext.generation,
+      provider
     );
   }
-  throw lastError || new Error("Codex Analytics content script did not respond.");
+  throw lastError || new Error(provider.messages.contentScriptMissing);
 }
 
-function mergeUsageSnapshot(accumulated, incoming) {
-  const usage = ChatGPTUsageModel.mergeUsageFields(
+function mergeUsageSnapshot(accumulated, incoming, provider = chatgptProvider) {
+  const usage = provider.mergeUsageFields(
     accumulated && accumulated.usage,
     incoming && incoming.usage
   );
@@ -699,28 +722,29 @@ async function saveIncompleteRefresh(
   pageSnapshot,
   tabId,
   source = "requested-no-new-usage",
-  expectedAnalyticsRefreshGeneration = null
+  expectedAnalyticsRefreshGeneration = null,
+  provider = chatgptProvider
 ) {
-  const data = await chrome.storage.local.get([storageKeys.state]);
+  const data = await chrome.storage.local.get([provider.stateKey]);
   assertCurrentAnalyticsRefresh(
     Number.isInteger(expectedAnalyticsRefreshGeneration)
       ? { generation: expectedAnalyticsRefreshGeneration }
       : null
   );
-  const existingState = data[storageKeys.state] || {};
+  const existingState = data[provider.stateKey] || {};
   const existingSnapshot = existingState.snapshot;
   const state = {
     ...withoutLegacyMessageCounters(existingState),
-    snapshot: ChatGPTUsageModel.hasParsedUsageLimit(existingSnapshot)
+    snapshot: provider.hasParsedUsageLimit(existingSnapshot)
       ? existingSnapshot
       : { ...pageSnapshot, tabId, source },
     status: pageSnapshot.loginStatus === "logged-out" ? "sign-in-required" : "analytics-no-new-data",
     lastRefreshAttemptAt: new Date().toISOString(),
-    diagnostic: pageSnapshot.codexAnalytics
-      ? "Codex Analytics rendered, but no new visible usage values were detected yet."
-      : "The temporary tab responded, but the Codex Analytics route was not detected yet."
+    diagnostic: provider.isUsagePageSnapshot(pageSnapshot)
+      ? provider.messages.noNewData
+      : provider.messages.routeNotDetected
   };
-  await chrome.storage.local.set({ [storageKeys.state]: state });
+  await chrome.storage.local.set({ [provider.stateKey]: state });
   if (pageSnapshot.loginStatus === "logged-out") {
     await clearCapacityMonitorState();
   } else {
@@ -1246,9 +1270,9 @@ async function ensureOffscreenDocument() {
   return true;
 }
 
-async function waitForTabReadyOrDelay(tabId) {
+async function waitForTabReadyOrDelay(tabId, provider = chatgptProvider) {
   try {
-    await waitForTabComplete(tabId);
+    await waitForTabComplete(tabId, provider);
   } catch {
     await delay(1000);
   }
@@ -1278,11 +1302,11 @@ async function handleRefreshPeriodChanged(value) {
   });
 }
 
-function waitForTabComplete(tabId) {
+function waitForTabComplete(tabId, provider = chatgptProvider) {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error("Timed out loading Codex Analytics."));
+      reject(new Error(provider.messages.loadTimeout));
     }, ANALYTICS_LOAD_TIMEOUT_MS);
 
     function listener(updatedTabId, changeInfo) {
@@ -1315,7 +1339,8 @@ async function withTimeout(
   promise,
   ms,
   message,
-  expectedRefreshGeneration = null
+  expectedRefreshGeneration = null,
+  provider = chatgptProvider
 ) {
   let timeoutId = null;
   let timedOut = false;
@@ -1334,11 +1359,11 @@ async function withTimeout(
     if (timedOut) {
       if (Number.isInteger(expectedRefreshGeneration)
         && expectedRefreshGeneration !== analyticsRefreshGeneration) {
-        const latest = await chrome.storage.local.get([storageKeys.state]);
+        const latest = await chrome.storage.local.get([provider.stateKey]);
         return {
           ok: false,
           ignored: true,
-          state: latest[storageKeys.state] || {},
+          state: latest[provider.stateKey] || {},
           error: String(error && error.message ? error.message : error)
         };
       }
@@ -1348,23 +1373,23 @@ async function withTimeout(
       analyticsRefreshContext = null;
       await expireCapacityMonitorState().catch(() => {});
     }
-    const data = await chrome.storage.local.get([storageKeys.state]);
+    const data = await chrome.storage.local.get([provider.stateKey]);
     if (invalidatedRefreshGeneration !== null
       && invalidatedRefreshGeneration !== analyticsRefreshGeneration) {
       return {
         ok: false,
         ignored: true,
-        state: data[storageKeys.state] || {},
+        state: data[provider.stateKey] || {},
         error: String(error && error.message ? error.message : error)
       };
     }
     const state = {
-      ...withoutLegacyMessageCounters(data[storageKeys.state] || {}),
+      ...withoutLegacyMessageCounters(data[provider.stateKey] || {}),
       status: "refresh-timeout",
       lastRefreshAttemptAt: new Date().toISOString(),
       diagnostic: String(error && error.message ? error.message : error)
     };
-    await chrome.storage.local.set({ [storageKeys.state]: state });
+    await chrome.storage.local.set({ [provider.stateKey]: state });
     return { ok: false, state, error: state.diagnostic };
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
@@ -1372,12 +1397,14 @@ async function withTimeout(
 }
 
 function isCodexAnalyticsUrl(url) {
+  return chatgptProvider.isUsageUrl(url);
+}
+
+function providerForSender(sender) {
+  const url = (sender && (sender.url || (sender.tab && sender.tab.url))) || "";
   try {
-    const parsed = new URL(url);
-    return parsed.hostname === "chatgpt.com"
-      && parsed.pathname.toLowerCase().includes("/codex/")
-      && parsed.pathname.toLowerCase().includes("/settings/analytics");
+    return UsageProviders.providerForHostname(new URL(url).hostname) || chatgptProvider;
   } catch {
-    return false;
+    return chatgptProvider;
   }
 }

@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const { ChatGPTUsageConfig, ChatGPTUsageModel } = require("../usage-model.js");
 const { CodexCapacityMonitor } = require("../capacity-monitor.js");
 const { UsageProviders } = require("../providers.js");
+const { fakeSnapshot, withFakeProviderAsync } = require("./helpers/fake-provider.js");
 const backgroundSource = readFileSync(join(__dirname, "..", "background.js"), "utf8");
 const LEGACY_MESSAGE_COUNTERS_KEY = "chatgptUsageMonitor.counters";
 
@@ -2718,4 +2719,42 @@ test("partial replenishment and reset date changes create native notifications o
   for (const notification of harness.calls.notifications) {
     assert.ok(harness.calls.clearedNotifications.includes(notification.id));
   }
+});
+
+test("a second provider refreshes from its own URL and never touches ChatGPT state", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const collectedAt = new Date().toISOString();
+    const chatgptState = { status: "usage-current", marker: "chatgpt-untouched" };
+    const harness = createBackgroundHarness({
+      initialState: chatgptState,
+      snapshot: fakeSnapshot(60, collectedAt)
+    });
+    const result = await harness.run(`refreshOnce("popup", false, UsageProviders.getProvider("fake"))`);
+    assert.equal(result.ok, true);
+    assert.equal(harness.calls.createArgs[0].url, "https://fake.example/usage");
+    const saved = harness.storage[fake.stateKey];
+    assert.equal(saved.status, "usage-current");
+    assert.equal(saved.snapshot.usage["fake:session"].structured.remainingPercent, 60);
+    assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.state].marker, "chatgpt-untouched");
+    assert.equal(
+      harness.storage[ChatGPTUsageConfig.storageKeys.capacityState].counters["fake:session"].remainingPercent,
+      60
+    );
+    assert.equal(harness.calls.removedTabIds.at(-1), 99);
+  });
+});
+
+test("a refresh for one provider waits for an in-flight refresh of another instead of joining it", async () => {
+  await withFakeProviderAsync(async () => {
+    const harness = createBackgroundHarness({ snapshot: fakeSnapshot(60, new Date().toISOString()) });
+    harness.run(`analyticsRefreshContext = { providerId: "chatgpt", popupRequested: false, acceptingPopupJoin: true, generation: analyticsRefreshGeneration };
+      analyticsRefreshPromise = new Promise((resolve) => { globalThis.finishChatgpt = () => resolve({ ok: true, from: "chatgpt" }); });`);
+    const pending = harness.run(`refreshOnce("popup", false, UsageProviders.getProvider("fake"))`);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.calls.create, 0, "the fake refresh must not start while ChatGPT is in flight");
+    harness.run(`analyticsRefreshPromise = null; analyticsRefreshContext = null; finishChatgpt()`);
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(harness.calls.createArgs[0].url, "https://fake.example/usage");
+  });
 });
