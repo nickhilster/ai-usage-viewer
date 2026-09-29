@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check background.js && node --check capacity-monitor.js && node --check content-script.js && node --check chat-badge.js && node --check offscreen.js && node --check popup.js && node --check usage-model.js",
+    "check": "node --check background.js && node --check capacity-monitor.js && node --check content-script.js && node --check chat-badge.js && node --check offscreen.js && node --check popup.js && node --check usage-model.js && node --check providers.js",
     "package:web-store": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-web-store.ps1"
   }
 }

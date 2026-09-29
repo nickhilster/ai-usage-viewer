@@ -30,6 +30,7 @@ $files = @(
   "offscreen.js",
   "popup.html",
   "popup.js",
+  "providers.js",
   "usage-model.js",
   "LICENSE",
   "icons/icon-16.png",
