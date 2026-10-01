@@ -16,8 +16,8 @@ $package = Get-Content -LiteralPath (Join-Path $repoRoot "package.json") -Raw | 
 if ($manifest.version -ne $package.version) {
   throw "Manifest and package versions do not match."
 }
-if ($package.author -ne "Teambotic Inc") {
-  throw "package.json author must be Teambotic Inc."
+if ($package.author -ne "TeamBotics Inc.") {
+  throw "package.json author must be TeamBotics Inc."
 }
 
 $files = @(

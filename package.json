@@ -1,7 +1,7 @@
 {
   "name": "chatgpt-usage-viewer",
   "version": "0.5.1",
-  "author": "Teambotic Inc",
+  "author": "TeamBotics Inc.",
   "homepage": "https://www.teambotics.app/",
   "description": "Local-only Chrome and Edge extension that shows visible ChatGPT/Codex usage information.",
   "license": "MIT",

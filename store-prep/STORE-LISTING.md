@@ -3,7 +3,7 @@
 ## Product details
 
 - **Name:** ChatGPT Usage Viewer
-- **Publisher account display name:** Teambotic Inc (must be configured in the Chrome Web Store developer account; it is not set by extension metadata)
+- **Publisher account display name:** TeamBotics Inc. (must be configured in the Chrome Web Store developer account; it is not set by extension metadata)
 - **Version:** 0.5.1
 - **Language:** English
 - **Suggested category:** Productivity
@@ -44,7 +44,7 @@ Review the public privacy policy and match the dashboard declarations to the sub
 ## Remaining store tasks
 
 - Register/configure the Chrome Web Store publisher account and enable required account security.
-- Confirm Teambotic Inc is the publisher display name and verify any official website URL in Search Console if the dashboard requires it.
+- Confirm TeamBotics Inc. is the publisher display name and verify any official website URL in Search Console if the dashboard requires it.
 - Add and publish the extension-specific privacy disclosure; confirm hello@teambotics.app is an appropriate monitored contact.
 - Capture at least one sanitized, current 1280x800 or 640x400 screenshot of the real extension. Do not submit an account-identifying screenshot.
 - Create the required 440x280 small promotional tile using approved branding.
