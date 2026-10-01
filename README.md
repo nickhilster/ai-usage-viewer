@@ -40,7 +40,7 @@ Recommended screenshots:
 
 - It does not use private OpenAI APIs.
 - It does not collect or store passwords.
-- It does not transmit derived usage readings to [Teambotics](https://www.teambotics.app), [NikDesign](https://www.nikdesign.ca), or other analytics services. To refresh, it loads ChatGPT's visible Analytics page through the user's existing browser session.
+- It does not transmit derived usage readings to [Teambotics](https://www.teambotics.app) or other analytics services. To refresh, it loads ChatGPT's visible Analytics page through the user's existing browser session.
 - It does not store conversation content.
 - It uses the existing browser session.
 - It stores derived metadata and timestamps only in `chrome.storage.local`.
@@ -243,4 +243,4 @@ ChatGPT and Codex are trademarks or products of their respective owners. This ex
 
 ---
 
-Built with ❤️ by [Teambotics](https://www.teambotics.app) and [NikDesign](https://www.nikdesign.ca)
+Built with ❤️ by [Teambotics](https://www.teambotics.app)

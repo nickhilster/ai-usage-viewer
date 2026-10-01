@@ -2,7 +2,7 @@
 
 **Draft for review before publication**
 **Effective date:** 2026-09-28
-**Publisher:** TeamBotics Inc.
+**Publisher:** Teambotics Inc.
 **Contact:** hello@teambotics.app (confirm this inbox is monitored for extension privacy requests before publication)
 
 ChatGPT Usage Viewer is an independent browser extension. It is not affiliated with OpenAI.
@@ -15,7 +15,7 @@ The extension stores derived usage state (including the visible plan label, sign
 
 ## How information is used and shared
 
-Information is used only to display usage, estimate capacity timing from observed readings, and provide user-configured local alerts. The extension does not transmit derived usage readings to TeamBotics Inc., nikdesign.ca, analytics providers, or other project-operated external services. It does not include advertising, telemetry, or third-party analytics. To refresh readings, the extension loads the visible Analytics page from ChatGPT through the user's existing browser session; that site request is handled by ChatGPT under its own terms and privacy policy.
+Information is used only to display usage, estimate capacity timing from observed readings, and provide user-configured local alerts. The extension does not transmit derived usage readings to Teambotics Inc., nikdesign.ca, analytics providers, or other project-operated external services. It does not include advertising, telemetry, or third-party analytics. To refresh readings, the extension loads the visible Analytics page from ChatGPT through the user's existing browser session; that site request is handled by ChatGPT under its own terms and privacy policy.
 
 The extension uses the user's existing ChatGPT browser session to load the visible Analytics page. It does not collect credentials or make private API calls.
 

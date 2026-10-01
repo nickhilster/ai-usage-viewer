@@ -18,16 +18,15 @@ test("the popup uses the compact layout without a mode toggle", () => {
   assert.match(popupHtml, /\.percentage-metric \.metric-value\s*{[^}]*conic-gradient/s);
 });
 
-test("the popup footer credits both sites in tiny text and identifies the local-only status", () => {
+test("the popup footer credits Teambotics in tiny text and identifies the local-only status", () => {
   assert.match(popupHtml, /Built with ❤️ by/);
-  assert.match(popupHtml, /href="https:\/\/www\.nikdesign\.ca\/"/);
   assert.match(popupHtml, /href="https:\/\/www\.teambotics\.app\/"/);
   assert.match(popupHtml, /\.foot-credit\s*{[^}]*font-size:\s*9px/s);
   assert.match(popupHtml, /Local only\. Not affiliated with OpenAI\./);
 });
 
 test("release author and versions match extension metadata", () => {
-  assert.equal(packageMetadata.author, "TeamBotics Inc.");
+  assert.equal(packageMetadata.author, "Teambotics Inc.");
   assert.equal(packageMetadata.homepage, "https://www.teambotics.app/");
   assert.equal(packageMetadata.name, "chatgpt-usage-viewer");
   assert.equal(packageMetadata.version, manifest.version);
