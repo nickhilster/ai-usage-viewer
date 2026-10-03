@@ -15,6 +15,9 @@
   const settingsStatus = document.getElementById("settingsStatus");
   const refreshPeriodInput = document.getElementById("refreshPeriodMinutes");
   const refreshPeriodValue = document.getElementById("refreshPeriodValue");
+  const providerSectionsRoot = document.getElementById("providerSections");
+  const registeredProviders = UsageProviders.listProviders();
+  const providerViews = new Map();
   const capacitySettingInputs = {
     enableNotifications: document.getElementById("enableNotifications"),
     notifyOnReset: document.getElementById("notifyOnReset"),
@@ -30,6 +33,10 @@
   let latestCapacitySessionId = null;
   let currentPaceSessionId = null;
   let requiresExtensionReload = false;
+  const latestProviderStates = {};
+  const latestProviderSnapshots = {};
+
+  createProviderSections();
 
   refreshButton.addEventListener("click", () => refresh(true));
   reloadExtensionButton.addEventListener("click", () => chrome.runtime.reload());
@@ -53,6 +60,11 @@
     if (areaName !== "local") return;
     const stateChange = changes[ChatGPTUsageConfig.storageKeys.state];
     if (stateChange && stateChange.newValue) renderState(stateChange.newValue);
+    for (const provider of registeredProviders) {
+      if (provider.id === "chatgpt") continue;
+      const change = changes[provider.stateKey];
+      if (change) renderProviderState(provider, change.newValue || {});
+    }
     const capacityChange = changes[ChatGPTUsageConfig.storageKeys.capacityState];
     if (capacityChange) {
       latestPace = capacityChange.newValue && capacityChange.newValue.pace;
@@ -68,6 +80,7 @@
   setInterval(() => {
     updateRefreshAge();
     renderCodexCards(latestSnapshot);
+    renderProviderSections();
   }, 30000);
 
   async function initializePopup() {
@@ -86,6 +99,10 @@
       || response.paceTrackerVersion !== CodexCapacityMonitor.PACE_TRACKER_VERSION));
     paceReloadNotice.hidden = !requiresExtensionReload;
     renderState(response && response.state);
+    for (const provider of registeredProviders) {
+      if (provider.id === "chatgpt") continue;
+      renderProviderState(provider, response && response.providers && response.providers[provider.id]);
+    }
   }
 
   async function loadCapacitySettings() {
@@ -169,6 +186,10 @@
         "Refresh timed out. Reload any open ChatGPT page and try again."
       );
       renderState(response && response.state);
+      for (const provider of registeredProviders) {
+        if (provider.id === "chatgpt") continue;
+        renderProviderState(provider, response && response.providers && response.providers[provider.id]);
+      }
       if ((!response || !response.ok) && !userRequested) statusDetail.textContent = "Using cached local data.";
     } catch (error) {
       statusTitle.textContent = "Usage unavailable";
@@ -190,6 +211,82 @@
     } finally {
       openUsageButton.disabled = false;
     }
+  }
+
+  function createProviderSections() {
+    providerSectionsRoot.textContent = "";
+    for (const provider of registeredProviders) {
+      if (provider.id === "chatgpt") continue;
+      const section = document.createElement("section");
+      section.className = "provider-section";
+      const heading = document.createElement("div");
+      heading.className = "provider-heading";
+      const title = document.createElement("h2");
+      title.textContent = provider.name;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = `Open ${provider.name} usage`;
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await chrome.runtime.sendMessage({ type: "usage:openUsage", providerId: provider.id });
+        } finally {
+          button.disabled = false;
+        }
+      });
+      const content = document.createElement("div");
+      content.className = "provider-metrics";
+      heading.append(title, button);
+      section.append(heading, content);
+      providerSectionsRoot.append(section);
+      providerViews.set(provider.id, { content });
+    }
+  }
+
+  function renderProviderSections() {
+    for (const provider of registeredProviders) {
+      if (provider.id !== "chatgpt") renderProviderState(provider, latestProviderStates[provider.id]);
+    }
+  }
+
+  function renderProviderState(provider, state) {
+    const view = providerViews.get(provider.id);
+    if (!view) return;
+    latestProviderStates[provider.id] = state || {};
+    const snapshot = state && state.snapshot;
+    latestProviderSnapshots[provider.id] = snapshot || null;
+    view.content.textContent = "";
+    if (!snapshot || snapshot.loginStatus === "logged-out" || isProviderSignedOut(state)) {
+      const signIn = document.createElement("div");
+      signIn.className = "provider-sign-in";
+      signIn.textContent = `Sign in to ${provider.name} to view usage.`;
+      view.content.append(signIn);
+      return;
+    }
+    for (const counter of provider.counters) {
+      const field = snapshot.usage && snapshot.usage[counter.key];
+      if (field && field.structured && field.structured.state === "not-started") {
+        const card = document.createElement("div");
+        card.className = "metric-card";
+        const title = document.createElement("div");
+        title.className = "metric-title";
+        title.textContent = counter.label;
+        const value = document.createElement("div");
+        value.className = "metric-reset";
+        value.textContent = "Not started · starts when a message is sent";
+        card.append(title, value);
+        view.content.append(card);
+      } else if (field) {
+        view.content.append(renderMetricCard(field, counter.label, snapshot));
+      } else {
+        view.content.append(renderUnavailableCard(counter.label));
+      }
+    }
+  }
+
+  function isProviderSignedOut(state) {
+    return Boolean(state && (state.status === "sign-in-required"
+      || state.status === "sign-in-required-manual-refresh"));
   }
 
   function setBusy(isBusy) {
@@ -327,7 +424,7 @@
   function appendMetric(section, snapshot, key, fallbackTitle, className) {
     const field = snapshot && snapshot.usage && snapshot.usage[key];
     const card = hasMetricData(snapshot, key)
-      ? renderMetricCard(field, fallbackTitle)
+      ? renderMetricCard(field, fallbackTitle, snapshot)
       : renderUnavailableCard(fallbackTitle);
     card.classList.add(className);
     if ((key === "codex5h" || key === "codexWeekly") && hasMetricData(snapshot, key)) {
@@ -354,7 +451,7 @@
     section.append(card);
   }
 
-  function renderMetricCard(field, fallbackTitle) {
+  function renderMetricCard(field, fallbackTitle, snapshot = null) {
     const structured = ChatGPTUsageModel.normalizeMetricField(field, fallbackTitle);
     const card = document.createElement("div");
     card.className = "metric-card";
@@ -407,7 +504,12 @@
     if (structured.resetText) {
       const reset = document.createElement("div");
       reset.className = "metric-reset";
-      reset.textContent = `Reset: ${structured.resetText}`;
+      const observedAt = Date.parse(snapshot && snapshot.collectedAt);
+      const resetAt = ChatGPTUsageModel.parseResetAt(structured.resetText, observedAt);
+      const countdown = ChatGPTUsageModel.formatResetCountdown(resetAt, Date.now());
+      reset.textContent = countdown
+        ? countdown === "Reset due · refresh usage" ? countdown : `Resets in ${countdown}`
+        : `Reset: ${structured.resetText}`;
       meta.append(reset);
     }
 
@@ -481,7 +583,7 @@
   function buildDiagnosticsPayload(state) {
     const snapshot = state && state.snapshot;
     return {
-      extension: "ChatGPT Usage Viewer",
+      extension: "AI Usage Viewer",
       diagnosticSchema: 1,
       status: state && state.status ? state.status : null,
       popupStatus: statusTitle ? statusTitle.textContent : null,

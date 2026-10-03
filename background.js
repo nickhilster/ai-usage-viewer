@@ -1,4 +1,4 @@
-importScripts("usage-model.js", "providers.js", "capacity-monitor.js");
+importScripts("usage-model.js", "providers.js", "claude-provider.js", "capacity-monitor.js");
 
 const {
   storageKeys,
@@ -32,6 +32,8 @@ let capacityUpdate = Promise.resolve();
 let capacityInitializationPromise = Promise.resolve();
 let capacityGeneration = 0;
 let capacitySuppressed = false;
+const providerCapacityGenerations = new Map();
+const suppressedCapacityProviders = new Set();
 const actionIconBitmapPromises = new Map();
 const adoptedAnalyticsTabIds = new Set();
 
@@ -106,7 +108,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "usage:refresh") {
-    refreshWithTimeout("popup").then(sendResponse);
+    refreshAllProvidersForPopup().then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "usage:openUsage") {
+    openUsageForProviderId(message.providerId).then(sendResponse);
     return true;
   }
 
@@ -122,11 +129,14 @@ async function saveSnapshot(
   snapshot,
   tab,
   source,
-  expectedCapacityGeneration = capacityGeneration,
+  expectedCapacityGeneration = null,
   capacitySnapshot = snapshot,
   expectedAnalyticsRefreshGeneration = null,
   provider = chatgptProvider
 ) {
+  if (!Number.isInteger(expectedCapacityGeneration)) {
+    expectedCapacityGeneration = capacityGenerationFor(provider);
+  }
   if (!provider.hasParsedUsageLimit(snapshot)) {
     return saveIncompleteRefresh(snapshot, tab && tab.id, source, expectedAnalyticsRefreshGeneration, provider);
   }
@@ -184,32 +194,42 @@ async function saveContentSnapshot(snapshot, tab, provider = chatgptProvider) {
     await clearCapacityMonitorState(provider);
   }
   if (snapshot && provider.isUsagePageSnapshot(snapshot) && !provider.hasParsedUsageLimit(snapshot)) {
-    return { ok: true, ignored: true, reason: "Codex Analytics usage not visible yet." };
+    return { ok: true, ignored: true, reason: provider.id === chatgptProvider.id
+      ? "Codex Analytics usage not visible yet."
+      : `${provider.name} usage is not visible yet.` };
   }
   if (snapshot && !provider.isUsagePageSnapshot(snapshot)) {
     const existing = await chrome.storage.local.get([provider.stateKey]);
     const currentSnapshot = existing[provider.stateKey] && existing[provider.stateKey].snapshot;
     if (provider.hasVisibleUsage(currentSnapshot)) {
-      return { ok: true, ignored: true, reason: "Preserved the last valid Codex Analytics snapshot." };
+      return { ok: true, ignored: true, reason: provider.id === chatgptProvider.id
+        ? "Preserved the last valid Codex Analytics snapshot."
+        : `Preserved the last valid ${provider.name} usage snapshot.` };
     }
   }
-  const result = await saveSnapshot(snapshot, tab, "content-script", capacityGeneration, snapshot, null, provider);
+  const result = await saveSnapshot(snapshot, tab, "content-script", capacityGenerationFor(provider), snapshot, null, provider);
   if (tab && tab.active && snapshot && snapshot.loginStatus !== "logged-out") {
-    await applyObservedCapacityVisual(snapshot);
+    await applyObservedCapacityVisual(snapshot, provider);
   }
   return result;
 }
 
 async function getPopupState() {
-  const data = await chrome.storage.local.get([storageKeys.state]);
-  const nextState = withoutLegacyMessageCounters(data[storageKeys.state] || {});
-  if (!isSignedOutUsageState(nextState)) {
-    await applyObservedCapacityVisual(nextState.snapshot);
+  const registered = UsageProviders.listProviders();
+  const data = await chrome.storage.local.get(registered.map((provider) => provider.stateKey));
+  const providerStates = Object.fromEntries(registered.map((provider) => [
+    provider.id,
+    withoutLegacyMessageCounters(data[provider.stateKey] || {})
+  ]));
+  for (const provider of registered) {
+    const state = providerStates[provider.id];
+    if (!isSignedOutUsageState(state)) await applyObservedCapacityVisual(state.snapshot, provider);
   }
-  refreshIfStale("popup-open", nextState).catch(() => {});
+  refreshIfStale("popup-open", providerStates[chatgptProvider.id]).catch(() => {});
   return {
     ok: true,
-    state: nextState,
+    state: providerStates[chatgptProvider.id],
+    providers: providerStates,
     paceSessionId: await getPaceSessionId(),
     paceTrackerVersion: CodexCapacityMonitor.PACE_TRACKER_VERSION
   };
@@ -241,6 +261,26 @@ async function refreshAllProviders(reason) {
   return results;
 }
 
+async function readProviderStates() {
+  const registered = UsageProviders.listProviders();
+  const data = await chrome.storage.local.get(registered.map((provider) => provider.stateKey));
+  return Object.fromEntries(registered.map((provider) => [
+    provider.id,
+    withoutLegacyMessageCounters(data[provider.stateKey] || {})
+  ]));
+}
+
+async function refreshAllProvidersForPopup() {
+  const results = await refreshAllProviders("popup");
+  const providers = await readProviderStates();
+  return {
+    ...(results[chatgptProvider.id] || { ok: false }),
+    results,
+    providers,
+    state: providers[chatgptProvider.id]
+  };
+}
+
 async function refreshIfStale(reason, state = null, now = Date.now()) {
   const registered = UsageProviders.listProviders();
   const keys = [storageKeys.refreshPeriodMinutes];
@@ -256,14 +296,19 @@ async function refreshIfStale(reason, state = null, now = Date.now()) {
     return shouldRefreshUsage(current, now, refreshPeriodMinutes);
   });
   if (!stale.length) {
-    return { ok: true, skipped: true, reason: "Usage data is still recent." };
+    return { ok: true, skipped: true, reason: "Usage data is still recent.", results: {} };
   }
   let first = null;
+  const results = {};
   for (const provider of stale) {
-    const result = await refreshWithTimeout(reason, provider);
+    const result = await refreshWithTimeout(reason, provider).catch((error) => ({
+      ok: false,
+      error: String(error && error.message ? error.message : error)
+    }));
+    results[provider.id] = result;
     if (first === null) first = result;
   }
-  return first;
+  return { ...first, results };
 }
 
 function shouldRefreshUsage(
@@ -335,6 +380,12 @@ function refreshWithTimeout(reason, provider = chatgptProvider) {
 
 async function openCodexAnalyticsPage() {
   return openUsagePage(chatgptProvider);
+}
+
+async function openUsageForProviderId(providerId) {
+  const provider = UsageProviders.getProvider(providerId);
+  if (!provider) return { ok: false, error: `Unknown provider: ${providerId}` };
+  return openUsagePage(provider);
 }
 
 async function openUsagePage(provider = chatgptProvider) {
@@ -620,10 +671,16 @@ function removeRetainedSignInTabIfOwned(exceptTabId, provider = chatgptProvider)
 }
 
 async function createBackgroundAnalyticsTab(provider = chatgptProvider) {
-  const activeTabsBeforeCreate = await chrome.tabs.query({
+  let activeTabsBeforeCreate = await chrome.tabs.query({
     active: true,
     lastFocusedWindow: true
   }).catch(() => []);
+  if (!activeTabsBeforeCreate.length) {
+    activeTabsBeforeCreate = await chrome.tabs.query({
+      active: true,
+      windowType: "normal"
+    }).catch(() => []);
+  }
   const previouslyActiveTab = activeTabsBeforeCreate[0] || null;
   const createOptions = {
     url: provider.usageUrl,
@@ -658,7 +715,7 @@ async function markRefreshStarted(reason, refreshContext, provider = chatgptProv
 async function requestSnapshotWithRetry(tabId, refreshContext, provider = chatgptProvider) {
   await capacityInitializationPromise;
   assertCurrentAnalyticsRefresh(refreshContext);
-  let expectedCapacityGeneration = capacityGeneration;
+  let expectedCapacityGeneration = capacityGenerationFor(provider);
   let observedLogout = false;
   let lastError = null;
   let lastSnapshot = null;
@@ -680,7 +737,7 @@ async function requestSnapshotWithRetry(tabId, refreshContext, provider = chatgp
           if (!observedLogout) {
             observedLogout = true;
             await clearCapacityMonitorState(provider);
-            expectedCapacityGeneration = capacityGeneration;
+            expectedCapacityGeneration = capacityGenerationFor(provider);
           }
           accumulatedSnapshot = null;
           lastUsageSignature = null;
@@ -819,60 +876,105 @@ async function saveIncompleteRefresh(
   return { ok: true, fresh: false, state, pageLoginStatus: pageSnapshot.loginStatus };
 }
 
+function capacityGenerationFor(provider = chatgptProvider) {
+  const selected = provider || chatgptProvider;
+  return selected.id === chatgptProvider.id
+    ? capacityGeneration
+    : providerCapacityGenerations.get(selected.id) || 0;
+}
+
+function bumpCapacityGeneration(provider = chatgptProvider) {
+  const selected = provider || chatgptProvider;
+  if (selected.id === chatgptProvider.id) {
+    capacityGeneration += 1;
+    return capacityGeneration;
+  }
+  const next = capacityGenerationFor(selected) + 1;
+  providerCapacityGenerations.set(selected.id, next);
+  return next;
+}
+
+function isCapacitySuppressed(provider = chatgptProvider) {
+  return suppressedCapacityProviders.has((provider || chatgptProvider).id);
+}
+
+function captureCapacityGenerations() {
+  return Object.fromEntries(UsageProviders.listProviders()
+    .map((provider) => [provider.id, capacityGenerationFor(provider)]));
+}
+
+function capacityGenerationsMatch(expected) {
+  return UsageProviders.listProviders().every((provider) => (
+    expected[provider.id] === capacityGenerationFor(provider)
+  ));
+}
+
 function initializeCapacityUi() {
-  const expectedCapacityGeneration = capacityGeneration;
+  const expectedCapacityGenerations = captureCapacityGenerations();
   const result = capacityUpdate.then(
-    () => initializeCapacityUiSerialized(expectedCapacityGeneration),
-    () => initializeCapacityUiSerialized(expectedCapacityGeneration)
+    () => initializeCapacityUiSerialized(expectedCapacityGenerations),
+    () => initializeCapacityUiSerialized(expectedCapacityGenerations)
   );
   capacityInitializationPromise = result.catch(() => {});
   capacityUpdate = capacityInitializationPromise;
   return result;
 }
 
-async function initializeCapacityUiSerialized(expectedCapacityGeneration) {
+async function initializeCapacityUiSerialized(expectedCapacityGenerations) {
+  const registeredProviders = UsageProviders.listProviders();
   const data = await chrome.storage.local.get([
-    storageKeys.state,
+    ...registeredProviders.map((provider) => provider.stateKey),
     storageKeys.capacitySettings,
     storageKeys.capacityState
   ]);
-  if (expectedCapacityGeneration !== capacityGeneration) {
+  if (!capacityGenerationsMatch(expectedCapacityGenerations)) {
     return { ignored: true, reason: "Capacity session changed during initialization." };
   }
   const settings = CodexCapacityMonitor.normalizeSettings(data[storageKeys.capacitySettings]);
-  if (expectedCapacityGeneration !== capacityGeneration) {
+  if (!capacityGenerationsMatch(expectedCapacityGenerations)) {
     return { ignored: true, reason: "Capacity session changed while initializing settings." };
   }
-  const usageState = data[storageKeys.state];
-  const confirmedCapacitySnapshot = usageState && usageState.confirmedCapacitySnapshot;
   const rawMonitorState = data[storageKeys.capacityState];
-  let available;
-  if (isSignedOutUsageState(usageState)) {
-    markCapacitySuppressed();
-    await clearCapacityMonitorStateSerialized();
-    return { suppressed: true };
-  } else if (rawMonitorState === undefined || rawMonitorState === null) {
-    const baseline = isFreshCapacitySnapshot(confirmedCapacitySnapshot)
-      ? CodexCapacityMonitor.evaluateSnapshot(
-          confirmedCapacitySnapshot,
-          null,
-          settings,
-          confirmedCapacitySnapshot.collectedAt
-        )
-      : CodexCapacityMonitor.evaluateSnapshot(null, null, settings);
-    await chrome.storage.local.set({ [storageKeys.capacityState]: baseline.state });
-    available = CodexCapacityMonitor.extractFreshStateCounters(baseline.state);
-  } else if (rawMonitorState.suppressed) {
-    capacitySuppressed = true;
-    available = [];
-  } else {
-    capacitySuppressed = false;
-    available = CodexCapacityMonitor.extractFreshStateCounters(rawMonitorState);
+  let monitorState = rawMonitorState && !rawMonitorState.suppressed
+    ? CodexCapacityMonitor.normalizeMonitorState(rawMonitorState)
+    : CodexCapacityMonitor.normalizeMonitorState(null);
+  let monitorStateChanged = rawMonitorState === undefined || rawMonitorState === null || Boolean(rawMonitorState && rawMonitorState.suppressed);
+  for (const provider of registeredProviders) {
+    const usageState = data[provider.stateKey];
+    if (isSignedOutUsageState(usageState)) {
+      suppressedCapacityProviders.add(provider.id);
+      monitorState = CodexCapacityMonitor.removeProviderCounters(monitorState, provider.id);
+      monitorStateChanged = true;
+      continue;
+    }
+    suppressedCapacityProviders.delete(provider.id);
+    const confirmed = usageState && usageState.confirmedCapacitySnapshot;
+    const providerKeys = new Set(provider.counters.map((counter) => counter.key));
+    const hasFreshProviderCounter = CodexCapacityMonitor.extractFreshStateCounters(monitorState)
+      .some((counter) => providerKeys.has(counter.key));
+    if (!hasFreshProviderCounter && isFreshCapacitySnapshot(confirmed)) {
+      monitorState = CodexCapacityMonitor.evaluateSnapshot(
+        confirmed,
+        monitorState,
+        settings,
+        confirmed.collectedAt,
+        null,
+        { providerId: provider.id }
+      ).state;
+      monitorStateChanged = true;
+    }
   }
+  const available = CodexCapacityMonitor.extractFreshStateCounters(monitorState);
+  capacitySuppressed = available.length === 0 && registeredProviders.every((provider) => isCapacitySuppressed(provider));
+  const nextState = capacitySuppressed
+    ? createSuppressedCapacityState()
+    : monitorStateChanged ? monitorState : rawMonitorState;
+  await chrome.storage.local.set({ [storageKeys.capacityState]: nextState });
   if (rawMonitorState && !rawMonitorState.suppressed) {
     await clearExpiredExhaustedNotifications(rawMonitorState);
   }
   await applyCapacityVisual(CodexCapacityMonitor.deriveVisualState(available, settings));
+  return { suppressed: capacitySuppressed, state: nextState };
 }
 
 function isFreshCapacitySnapshot(snapshot, now = Date.now()) {
@@ -885,10 +987,13 @@ function isFreshCapacitySnapshot(snapshot, now = Date.now()) {
 
 function processCapacitySnapshot(
   snapshot,
-  expectedCapacityGeneration = capacityGeneration,
+  expectedCapacityGeneration = null,
   expectedAnalyticsRefreshGeneration = null,
   provider = chatgptProvider
 ) {
+  if (!Number.isInteger(expectedCapacityGeneration)) {
+    expectedCapacityGeneration = capacityGenerationFor(provider);
+  }
   const result = capacityUpdate.then(
     () => processCapacitySnapshotSerialized(
       snapshot,
@@ -907,26 +1012,30 @@ function processCapacitySnapshot(
   return result;
 }
 
-function applyObservedCapacityVisual(snapshot) {
+function applyObservedCapacityVisual(snapshot, provider = chatgptProvider) {
   const result = capacityUpdate.then(
-    () => applyObservedCapacityVisualSerialized(snapshot),
-    () => applyObservedCapacityVisualSerialized(snapshot)
+    () => applyObservedCapacityVisualSerialized(snapshot, provider),
+    () => applyObservedCapacityVisualSerialized(snapshot, provider)
   );
   capacityUpdate = result.catch(() => {});
   return result;
 }
 
-async function applyObservedCapacityVisualSerialized(snapshot) {
-  if (!snapshot || !snapshot.codexAnalytics || snapshot.loginStatus === "logged-out") {
-    return { ignored: true, reason: "No signed-in Analytics snapshot is available." };
+async function applyObservedCapacityVisualSerialized(snapshot, provider = chatgptProvider) {
+  if (!snapshot || !provider.isUsagePageSnapshot(snapshot) || snapshot.loginStatus === "logged-out") {
+    return { ignored: true, reason: `No signed-in ${provider.name} usage snapshot is available.` };
   }
-  const available = CodexCapacityMonitor.extractAvailableCounters(snapshot);
-  if (!available.length) {
+  const providerKeys = new Set(provider.counters.map((counter) => counter.key));
+  const observed = CodexCapacityMonitor.extractAvailableCounters(snapshot)
+    .filter((counter) => providerKeys.has(counter.key));
+  if (!provider.hasParsedUsageLimit(snapshot) || !observed.length) {
     return { ignored: true, reason: "No visible capacity counters are available." };
   }
-  const data = await chrome.storage.local.get([storageKeys.capacitySettings]);
+  const data = await chrome.storage.local.get([storageKeys.capacitySettings, storageKeys.capacityState]);
+  const stored = CodexCapacityMonitor.extractFreshStateCounters(data[storageKeys.capacityState])
+    .filter((counter) => !providerKeys.has(counter.key));
   const visual = CodexCapacityMonitor.deriveVisualState(
-    available,
+    [...stored, ...observed],
     data[storageKeys.capacitySettings]
   );
   await applyCapacityVisual(visual);
@@ -956,7 +1065,7 @@ async function processCapacitySnapshotSerialized(
   expectedAnalyticsRefreshGeneration,
   provider = chatgptProvider
 ) {
-  if (expectedCapacityGeneration !== capacityGeneration) {
+  if (expectedCapacityGeneration !== capacityGenerationFor(provider)) {
     return { ignored: true, reason: "Capacity session changed before processing." };
   }
   if (!isCurrentAnalyticsRefreshGeneration(expectedAnalyticsRefreshGeneration)) {
@@ -967,7 +1076,7 @@ async function processCapacitySnapshotSerialized(
     storageKeys.capacitySettings,
     storageKeys.capacityState
   ]);
-  if (expectedCapacityGeneration !== capacityGeneration) {
+  if (expectedCapacityGeneration !== capacityGenerationFor(provider)) {
     return { ignored: true, reason: "Capacity session changed during processing." };
   }
   if (!isCurrentAnalyticsRefreshGeneration(expectedAnalyticsRefreshGeneration)) {
@@ -983,7 +1092,8 @@ async function processCapacitySnapshotSerialized(
   );
   const storageUpdate = { [storageKeys.capacityState]: evaluation.state };
   await chrome.storage.local.set(storageUpdate);
-  if (expectedCapacityGeneration === capacityGeneration) {
+  if (expectedCapacityGeneration === capacityGenerationFor(provider)) {
+    suppressedCapacityProviders.delete(provider.id);
     capacitySuppressed = false;
   }
   await applyCapacityVisual(evaluation.visual);
@@ -993,18 +1103,19 @@ async function processCapacitySnapshotSerialized(
   );
 
   for (const event of evaluation.events) {
-    if (expectedCapacityGeneration !== capacityGeneration) break;
+    if (expectedCapacityGeneration !== capacityGenerationFor(provider)) break;
     if (!isCurrentAnalyticsRefreshGeneration(expectedAnalyticsRefreshGeneration)) break;
     if (CodexCapacityMonitor.shouldNotify(event, evaluation.settings)) {
       await showCapacityNotification(event).catch(() => {});
     }
   }
-  if (expectedCapacityGeneration === capacityGeneration
+  if (expectedCapacityGeneration === capacityGenerationFor(provider)
     && isCurrentAnalyticsRefreshGeneration(expectedAnalyticsRefreshGeneration)
     && evaluation.events.some((event) => CodexCapacityMonitor.shouldPlaySound(event, evaluation.settings))) {
     await playCapacitySound(
       expectedCapacityGeneration,
-      expectedAnalyticsRefreshGeneration
+      expectedAnalyticsRefreshGeneration,
+      provider
     ).catch(() => {});
   }
   return evaluation;
@@ -1055,26 +1166,16 @@ function createSuppressedCapacityState() {
   };
 }
 
-function isOnlyRegisteredProvider(provider) {
-  const registered = UsageProviders.listProviders();
-  return !provider || (registered.length === 1 && registered[0].id === provider.id);
-}
-
-function clearCapacityMonitorState(provider) {
-  if (isOnlyRegisteredProvider(provider)) {
-    if (!markCapacitySuppressed()) return capacityUpdate;
-    const result = capacityUpdate.then(
-      () => clearCapacityMonitorStateSerialized(),
-      () => clearCapacityMonitorStateSerialized()
-    );
-    capacityUpdate = result.catch(() => {});
-    return result;
+function clearCapacityMonitorState(provider = chatgptProvider) {
+  const selected = provider || chatgptProvider;
+  if (!isCapacitySuppressed(selected)) {
+    suppressedCapacityProviders.add(selected.id);
+    bumpCapacityGeneration(selected);
   }
-  // Other providers still have live readings: drop only this provider's state.
-  capacityGeneration += 1;
+  if (UsageProviders.listProviders().length === 1) capacitySuppressed = true;
   const result = capacityUpdate.then(
-    () => clearProviderCapacityStateSerialized(provider),
-    () => clearProviderCapacityStateSerialized(provider)
+    () => clearProviderCapacityStateSerialized(selected),
+    () => clearProviderCapacityStateSerialized(selected)
   );
   capacityUpdate = result.catch(() => {});
   return result;
@@ -1087,13 +1188,24 @@ async function clearProviderCapacityStateSerialized(provider) {
   ]);
   const settings = CodexCapacityMonitor.normalizeSettings(data[storageKeys.capacitySettings]);
   const rawState = data[storageKeys.capacityState];
-  const next = rawState && rawState.suppressed
-    ? rawState
-    : CodexCapacityMonitor.removeProviderCounters(rawState, provider.id);
+  const normalized = CodexCapacityMonitor.normalizeMonitorState(rawState);
+  const providerKeys = new Set(provider.counters.map((counter) => counter.key));
+  const hasProviderState = Object.keys(normalized.counters).some((key) => providerKeys.has(key))
+    || normalized.availableKeys.some((key) => providerKeys.has(key))
+    || Object.entries(normalized.pace).some(([key, samples]) => providerKeys.has(key) && samples.length);
+  const onlyRegisteredProvider = UsageProviders.listProviders().length === 1;
+  if (!hasProviderState && !onlyRegisteredProvider) {
+    suppressedCapacityProviders.add(provider.id);
+    return { ignored: true, reason: `No ${provider.name} capacity state to clear.` };
+  }
+  const removed = CodexCapacityMonitor.removeProviderCounters(rawState, provider.id);
+  const remaining = CodexCapacityMonitor.extractFreshStateCounters(removed);
+  const next = remaining.length ? removed : createSuppressedCapacityState();
+  capacitySuppressed = remaining.length === 0;
   await chrome.storage.local.set({ [storageKeys.capacityState]: next });
-  const remaining = next.suppressed ? [] : CodexCapacityMonitor.extractFreshStateCounters(next);
   await applyCapacityVisual(CodexCapacityMonitor.deriveVisualState(remaining, settings));
   await clearAllCapacityNotifications(provider);
+  return next;
 }
 
 function expireCapacityMonitorState() {
@@ -1130,10 +1242,11 @@ async function expireCapacityMonitorStateSerialized() {
   return state;
 }
 
-function markCapacitySuppressed() {
-  if (capacitySuppressed) return false;
+function markCapacitySuppressed(provider = chatgptProvider) {
+  if (isCapacitySuppressed(provider)) return false;
+  suppressedCapacityProviders.add((provider || chatgptProvider).id);
   capacitySuppressed = true;
-  capacityGeneration += 1;
+  bumpCapacityGeneration(provider);
   return true;
 }
 
@@ -1342,11 +1455,12 @@ async function showCapacityNotification(event) {
 
 async function playCapacitySound(
   expectedCapacityGeneration,
-  expectedAnalyticsRefreshGeneration = null
+  expectedAnalyticsRefreshGeneration = null,
+  provider = chatgptProvider
 ) {
   const ready = await ensureOffscreenDocument();
   if (!ready
-    || expectedCapacityGeneration !== capacityGeneration
+    || expectedCapacityGeneration !== capacityGenerationFor(provider)
     || !isCurrentAnalyticsRefreshGeneration(expectedAnalyticsRefreshGeneration)) return;
   await chrome.runtime.sendMessage({ type: "capacity:playSound" });
 }

@@ -25,6 +25,8 @@ $files = @(
   "background.js",
   "capacity-monitor.js",
   "chat-badge.js",
+  "claude-provider.js",
+  "claude-content-script.js",
   "content-script.js",
   "offscreen.html",
   "offscreen.js",

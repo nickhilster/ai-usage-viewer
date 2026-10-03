@@ -4,6 +4,15 @@ All notable user-facing changes are documented here.
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-03
+
+- Rename the extension to AI Usage Viewer and add Claude usage alongside ChatGPT Codex usage in the popup, scheduled refresh flow, capacity alerts, provider-specific actions, and on-page badge.
+- Parse Claude current-session and weekly limits from its visible usage settings, including not-started sessions and live reset countdowns.
+
+## 0.5.2 - 2026-10-03
+
+- Keep automatic refresh tabs inside an existing normal browser window when Edge temporarily reports no last-focused window, preventing background refreshes from opening duplicate windows.
+
 ## 0.5.1 - 2026-09-28
 
 - Rename the extension to ChatGPT Usage Viewer across its UI, metadata, alerts, and store materials.

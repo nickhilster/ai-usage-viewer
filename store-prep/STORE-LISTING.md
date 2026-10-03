@@ -2,22 +2,22 @@
 
 ## Product details
 
-- **Name:** ChatGPT Usage Viewer
+- **Name:** AI Usage Viewer
 - **Publisher account display name:** Teambotics Inc. (must be configured in the Chrome Web Store developer account; it is not set by extension metadata)
-- **Version:** 0.5.1
+- **Version:** 0.6.0
 - **Language:** English
 - **Suggested category:** Productivity
-- **Short description:** View visible Codex usage limits and reset details from your ChatGPT session, with a compact draggable badge.
-- **Single purpose:** Show usage information that ChatGPT visibly renders and provide local capacity alerts and estimates.
+- **Short description:** View visible ChatGPT Codex and Claude usage limits, resets, and local capacity alerts.
+- **Single purpose:** Show usage information that ChatGPT and Claude visibly render and provide local capacity alerts and estimates.
 - **Homepage:** https://www.teambotics.app/ (verified live on 2026-09-28; confirm publisher ownership in the dashboard)
 - **Support contact:** hello@teambotics.app (public contact shown on the Teambotics site; confirm it is monitored for extension support).
 - **Privacy policy URL:** https://www.teambotics.app/privacy exists, but currently describes the public website and its services. Add and publish the extension-specific disclosures from `PRIVACY-POLICY.md` there, or publish that draft at a dedicated stable URL, before submission.
 
 ## Detailed description draft
 
-ChatGPT Usage Viewer puts visible Codex capacity information where you need it. It reads the usage values ChatGPT renders in its Analytics interface and shows the latest 5-hour and weekly limits, credits, reset details, and local estimates in the extension popup. A small draggable badge can stay on ChatGPT pages; click it for weekly usage and refresh details.
+AI Usage Viewer puts visible AI-service capacity information where you need it. It reads usage values rendered by ChatGPT Codex and Claude and shows provider-specific limits, reset details, and local estimates in the extension popup. A small draggable badge can stay on supported provider pages for quick status and refresh details.
 
-The extension refreshes on a local schedule that you control. It loads ChatGPT's visible Analytics page through your existing browser session, keeps derived usage data and preferences in local browser extension storage, and does not transmit derived usage readings to Teambotic, nikdesign.ca, or other analytics services. It does not read conversation text, ask for passwords, or call private OpenAI APIs. Values are shown only when the visible page provides data the parser can recognize.
+The extension refreshes on a local schedule that you control. It loads each provider's visible usage page through your existing browser session, keeps derived usage data and preferences in local browser extension storage, and does not transmit derived usage readings to Teambotics, nikdesign.ca, or other analytics services. It does not read conversation text, ask for passwords, or call private provider APIs. Values are shown only when the visible page provides data the parser can recognize.
 
 Features:
 
@@ -36,6 +36,7 @@ Availability depends on the values ChatGPT exposes for your account, region, lan
 - **offscreen:** play the optional local alert sound when enabled.
 - **storage:** keep derived usage readings, refresh history, local preferences, and badge position on the device.
 - **chatgpt.com host access:** inspect visible Analytics UI and show the display-only badge on ChatGPT pages. The badge does not inspect page conversations.
+- **claude.ai host access:** inspect visible usage settings and show the display-only badge on Claude pages. The badge does not inspect conversations.
 
 ## Privacy-practices form preparation
 

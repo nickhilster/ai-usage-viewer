@@ -11,14 +11,15 @@ const { fakeSnapshot, withFakeProviderAsync } = require("./helpers/fake-provider
 const backgroundSource = readFileSync(join(__dirname, "..", "background.js"), "utf8");
 const LEGACY_MESSAGE_COUNTERS_KEY = "chatgptUsageMonitor.counters";
 
-function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null, createError = null, initialState = {}, existingAlarm = true, retainedSignInTabId = null, localRetainedSignInTabId = null, refreshPeriodMinutes = null, capacitySettings = null, capacityState = null, enableCustomActionIcon = false, blockCapacityInitialization = false, callbackOnlyNotificationClear = false, deferRefreshTimeout = false } = {}) {
+function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null, createError = null, initialState = {}, providerStates = {}, existingAlarm = true, retainedSignInTabId = null, localRetainedSignInTabId = null, refreshPeriodMinutes = null, capacitySettings = null, capacityState = null, enableCustomActionIcon = false, blockCapacityInitialization = false, callbackOnlyNotificationClear = false, deferRefreshTimeout = false, lastFocusedQueryEmpty = false } = {}) {
   const storage = {
     [ChatGPTUsageConfig.storageKeys.state]: initialState,
     [LEGACY_MESSAGE_COUNTERS_KEY]: { events: [{ ts: 1, kind: "message" }] },
     [ChatGPTUsageConfig.storageKeys.retainedSignInTab]: localRetainedSignInTabId,
     [ChatGPTUsageConfig.storageKeys.refreshPeriodMinutes]: refreshPeriodMinutes,
     [ChatGPTUsageConfig.storageKeys.capacitySettings]: capacitySettings,
-    [ChatGPTUsageConfig.storageKeys.capacityState]: capacityState
+    [ChatGPTUsageConfig.storageKeys.capacityState]: capacityState,
+    ...providerStates
   };
   const sessionStorage = {
     [ChatGPTUsageConfig.storageKeys.retainedSignInTab]: retainedSignInTabId,
@@ -116,6 +117,7 @@ function createBackgroundHarness({ tabs = [], snapshot = null, sendError = null,
     },
     tabs: {
       async query(queryInfo = {}) {
+        if (queryInfo.lastFocusedWindow && lastFocusedQueryEmpty) return [];
         return queryInfo.active ? openTabs.filter((tab) => tab.active) : openTabs;
       },
       async create(args) {
@@ -1699,7 +1701,7 @@ test("notification opt-out wins over a capacity alert already in flight", async 
   assert.deepEqual(lowEvents.map((event) => event.type), ["create", "clear"]);
 });
 
-function visibleSnapshot() {
+function visibleSnapshot(overrides = {}) {
   return {
     status: "ok",
     hostname: "chatgpt.com",
@@ -1714,7 +1716,8 @@ function visibleSnapshot() {
         value: "Banked resets: 2; expires Aug 31, 2026",
         structured: { bankedResetCount: 2, expiresText: "Aug 31, 2026" }
       }
-    }
+    },
+    ...overrides
   };
 }
 
@@ -1864,6 +1867,22 @@ test("periodic refresh creates a real temporary Analytics tab when none is open"
   assert.equal(harness.calls.remove, 1);
   assert.equal(harness.calls.update, 0);
   assert.deepEqual(harness.getOpenTabs().filter((tab) => tab.active).map((tab) => tab.id), [17]);
+});
+
+test("periodic refresh stays in an existing normal window when the last-focused query is empty", async () => {
+  const harness = createBackgroundHarness({
+    tabs: [{ id: 17, windowId: 5, url: "https://chatgpt.com/c/ordinary-conversation", active: true, status: "complete" }],
+    snapshot: visibleSnapshot(),
+    lastFocusedQueryEmpty: true
+  });
+
+  const result = await harness.run('refreshOnce("alarm")');
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.create, 1);
+  assert.equal(harness.calls.createArgs[0].active, false);
+  assert.equal(harness.calls.createArgs[0].windowId, 5);
+  assert.equal(harness.calls.remove, 1);
 });
 
 test("periodic refresh uses a fresh background page while Analytics stays open", async () => {
@@ -2813,6 +2832,150 @@ test("clearing the only provider keeps the existing global suppression behavior"
   const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
   assert.equal(state.suppressed, true);
   assert.equal(harness.run("capacitySuppressed"), true);
+});
+
+test("repeated sign-out for an empty secondary provider does not change ChatGPT's generation", async () => {
+  await withFakeProviderAsync(async () => {
+    const harness = createBackgroundHarness({});
+    const before = harness.run("capacityGenerationFor(UsageProviders.getProvider('chatgpt'))");
+    await harness.run("clearCapacityMonitorState(UsageProviders.getProvider('fake'))");
+    await harness.run("clearCapacityMonitorState(UsageProviders.getProvider('fake'))");
+    assert.equal(harness.run("capacityGenerationFor(UsageProviders.getProvider('chatgpt'))"), before);
+  });
+});
+
+test("clearing the last provider creates global suppression", async () => {
+  await withFakeProviderAsync(async () => {
+    const seen = new Date().toISOString();
+    const harness = createBackgroundHarness({
+      capacityState: {
+        version: 2,
+        counters: {
+          codexWeekly: { remainingPercent: 80, resetText: null, sessionId: "test-session", lastSeenAt: seen },
+          "fake:session": { remainingPercent: 30, resetText: null, sessionId: "test-session", lastSeenAt: seen }
+        },
+        pace: { codexWeekly: [], codex5h: [], "fake:session": [] },
+        paceSessionId: "test-session",
+        availableKeys: ["codexWeekly", "fake:session"],
+        updatedAt: seen
+      }
+    });
+    await harness.run("clearCapacityMonitorState(UsageProviders.getProvider('fake'))");
+    assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.capacityState].suppressed, undefined);
+    await harness.run("clearCapacityMonitorState(UsageProviders.getProvider('chatgpt'))");
+    assert.equal(harness.storage[ChatGPTUsageConfig.storageKeys.capacityState].suppressed, true);
+    assert.equal(harness.run("capacitySuppressed"), true);
+  });
+});
+
+test("startup preserves a fresh secondary provider when ChatGPT is signed out", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const collectedAt = new Date().toISOString();
+    const confirmed = fakeSnapshot(37, collectedAt);
+    const harness = createBackgroundHarness({
+      initialState: { status: "sign-in-required", snapshot: { loginStatus: "logged-out" } },
+      providerStates: {
+        [fake.stateKey]: { status: "usage-current", confirmedCapacitySnapshot: confirmed, snapshot: confirmed }
+      }
+    });
+    await harness.run("capacityInitializationPromise");
+    const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
+    assert.equal(state.counters["fake:session"].remainingPercent, 37);
+    assert.equal(state.counters.codexWeekly, undefined);
+    assert.equal(harness.calls.badgeText.at(-1).text, "37");
+  });
+});
+
+test("startup preserves fresh ChatGPT capacity when a secondary provider is signed out", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const collectedAt = new Date().toISOString();
+    const confirmed = visibleSnapshot({ collectedAt });
+    const harness = createBackgroundHarness({
+      initialState: { status: "usage-current", confirmedCapacitySnapshot: confirmed, snapshot: confirmed },
+      providerStates: {
+        [fake.stateKey]: { status: "sign-in-required", snapshot: { loginStatus: "logged-out" } }
+      }
+    });
+    await harness.run("capacityInitializationPromise");
+    const state = harness.storage[ChatGPTUsageConfig.storageKeys.capacityState];
+    assert.ok(state.counters.codexWeekly || state.counters.codex5h);
+    assert.equal(state.counters["fake:session"], undefined);
+    assert.equal(state.suppressed, undefined);
+  });
+});
+
+test("an observed secondary-provider snapshot merges with stored counters for the toolbar", async () => {
+  await withFakeProviderAsync(async () => {
+    const seen = new Date().toISOString();
+    const harness = createBackgroundHarness({
+      capacityState: {
+        version: 2,
+        counters: { codexWeekly: { remainingPercent: 80, resetText: null, sessionId: "test-session", lastSeenAt: seen } },
+        pace: { codexWeekly: [], codex5h: [], "fake:session": [] },
+        paceSessionId: "test-session",
+        availableKeys: ["codexWeekly"],
+        updatedAt: seen
+      }
+    });
+    const snapshot = fakeSnapshot(30, seen);
+    const result = await harness.run(`applyObservedCapacityVisual(${JSON.stringify(snapshot)}, UsageProviders.getProvider("fake"))`);
+    assert.equal(result.visual.badgeText, "30");
+    assert.equal(result.visual.counter.key, "fake:session");
+  });
+});
+
+test("popup state returns every provider and refreshes a stale secondary provider", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const fresh = new Date().toISOString();
+    const fakeState = { status: "page-snapshot", snapshot: fakeSnapshot(55, fresh) };
+    const harness = createBackgroundHarness({
+      initialState: { status: "usage-current", dataCollectedAt: fresh, snapshot: visibleSnapshot({ collectedAt: fresh }) },
+      providerStates: { [fake.stateKey]: fakeState }
+    });
+    harness.run("var popupRefreshOrder = []; refreshWithTimeout = async (reason, provider) => { popupRefreshOrder.push(provider.id); return { ok: true, providerId: provider.id }; };");
+    const result = await harness.run("getPopupState()");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(result.state.status, "usage-current");
+    assert.equal(result.providers.chatgpt.status, "usage-current");
+    assert.equal(result.providers.fake.status, "page-snapshot");
+    assert.deepEqual(Array.from(harness.run("popupRefreshOrder")), ["fake"]);
+  });
+});
+
+test("a failed stale provider does not prevent later providers from refreshing", async () => {
+  await withFakeProviderAsync(async () => {
+    const harness = createBackgroundHarness({});
+    harness.run("refreshWithTimeout = async (_reason, provider) => { if (provider.id === 'chatgpt') throw new Error('ChatGPT failed'); return { ok: true, providerId: provider.id }; };");
+    const result = await harness.run("refreshIfStale('popup-open')");
+    assert.equal(result.ok, false);
+    assert.match(result.error, /ChatGPT failed/);
+    assert.equal(result.results.chatgpt.ok, false);
+    assert.equal(result.results.fake.ok, true);
+  });
+});
+
+test("generic open usage validates and routes the provider id", async () => {
+  await withFakeProviderAsync(async () => {
+    const harness = createBackgroundHarness({});
+    const opened = await harness.run("openUsageForProviderId('fake')");
+    assert.equal(opened.ok, true);
+    assert.equal(harness.calls.createArgs.at(-1).url, "https://fake.example/usage");
+    const rejected = await harness.run("openUsageForProviderId('missing')");
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /Unknown provider/);
+  });
+});
+
+test("content preservation reasons name a secondary provider", async () => {
+  await withFakeProviderAsync(async (fake) => {
+    const collectedAt = new Date().toISOString();
+    const harness = createBackgroundHarness({
+      providerStates: { [fake.stateKey]: { snapshot: fakeSnapshot(60, collectedAt) } }
+    });
+    const result = await harness.run("saveContentSnapshot({ status: 'ok', loginStatus: 'logged-in' }, { id: 7 }, UsageProviders.getProvider('fake'))");
+    assert.equal(result.ignored, true);
+    assert.match(result.reason, /Fake usage/);
+  });
 });
 
 test("a provider refresh does not reset another provider's pace history", async () => {

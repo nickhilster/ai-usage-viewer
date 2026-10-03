@@ -1,8 +1,8 @@
-# ChatGPT Usage Viewer
+# AI Usage Viewer
 
-Local-only Chrome/Edge extension that shows usage rendered by ChatGPT/Codex in the current browser session.
+Local-only Chrome/Edge extension that shows usage rendered by ChatGPT Codex and Claude in the current browser session.
 
-It is intended for developers and power users who want a small usage popup while working with ChatGPT and Codex.
+It is intended for developers and power users who want one small usage popup while working with ChatGPT Codex and Claude.
 
 ## Screenshots
 
@@ -16,13 +16,14 @@ Recommended screenshots:
 
 ## Features
 
-- Detects whether ChatGPT appears to be signed in.
+- Detects whether ChatGPT and Claude appear to be signed in.
 - Detects the visible plan when the UI exposes it.
 - Reads visible Codex usage cards when available.
+- Reads Claude's visible current-session and weekly usage limits when available.
 - Shows 5-hour and weekly usage percentages when they are visible in the ChatGPT/Codex UI.
 - Shows remaining credits when visible.
 - Shows banked full-reset count and expiration when the Codex UI exposes `Banked resets`, `Full resets`, or `Restablecimiento completo`.
-- Shows a compact draggable usage badge on ChatGPT pages, with weekly usage and refresh time on click.
+- Shows a compact draggable usage badge on ChatGPT and Claude pages, with provider usage and refresh time on click.
 - Offers a persistent compact mode that pairs login/plan, 5-hour/weekly and credits/full resets into two-column rows.
 - Highlights usage bars:
   - Green: more than 50% remaining.
@@ -38,9 +39,9 @@ Recommended screenshots:
 
 ## Privacy
 
-- It does not use private OpenAI APIs.
+- It does not use private OpenAI or Anthropic APIs.
 - It does not collect or store passwords.
-- It does not transmit derived usage readings to [Teambotics](https://www.teambotics.app) or other analytics services. To refresh, it loads ChatGPT's visible Analytics page through the user's existing browser session.
+- It does not transmit derived usage readings to [Teambotics](https://www.teambotics.app) or other analytics services. To refresh, it loads each provider's visible usage page through the user's existing browser session.
 - It does not store conversation content.
 - It uses the existing browser session.
 - It stores derived metadata and timestamps only in `chrome.storage.local`.
@@ -48,7 +49,7 @@ Recommended screenshots:
 
 ## Limitations
 
-This extension reads the rendered Codex Analytics UI from `chatgpt.com`.
+This extension reads the rendered Codex Analytics UI from `chatgpt.com` and the rendered usage settings UI from `claude.ai`.
 
 Some values may be unavailable depending on:
 
@@ -56,13 +57,13 @@ Some values may be unavailable depending on:
 - your region
 - language settings
 - A/B tests
-- OpenAI frontend changes
-- whether the Codex analytics page exposes usage cards to your account
+- OpenAI or Anthropic frontend changes
+- whether the provider's usage page exposes usage cards to your account
 
 When exact usage is not visible, the extension will show it as unavailable rather than inventing a value.
 
-- Usage appears only when ChatGPT/Codex exposes it in visible page text.
-- It does not call private OpenAI APIs or background endpoints.
+- Usage appears only when ChatGPT Codex or Claude exposes it in visible page text and accessibility attributes.
+- It does not call private provider APIs or background endpoints.
 - It does not infer hidden limits, account entitlements, or exact reset behavior.
 - Browser and account A/B tests can make values unavailable.
 - Diagnostics are intentionally redacted and do not include raw page text.
@@ -73,6 +74,7 @@ When exact usage is not visible, the extension will show it as unavailable rathe
 
 - Chrome and Edge extensions using Manifest V3.
 - `https://chatgpt.com/*`.
+- `https://claude.ai/*`.
 - English and Spanish Codex usage text when the values are visible in the ChatGPT/Codex UI.
 
 ### Extension permissions
@@ -81,13 +83,13 @@ When exact usage is not visible, the extension will show it as unavailable rathe
 - `storage`: persist derived usage, threshold crossings, and local settings.
 - `notifications`: show reset, low-capacity, critical, and exhausted alerts.
 - `offscreen`: play a short local tone only when **Enable sounds** is turned on. The audio document uses the `AUDIO_PLAYBACK` reason and is not used to keep the service worker alive.
-- Host access is limited to `chatgpt.com`, for visible-UI extraction and the display-only badge.
+- Host access is limited to `chatgpt.com` and `claude.ai`, for visible-UI extraction and the display-only badge.
 
-The extension may need parser updates when ChatGPT changes page structure, wording, model names, or the Codex usage page location.
+The extension may need parser updates when ChatGPT or Claude changes page structure, wording, model names, or usage-page locations.
 
 ## How extraction works
 
-The extension reads rendered UI text and accessibility attributes only on its permitted ChatGPT routes. To obtain fresh readings it loads ChatGPT's visible Analytics page through the user's existing browser session; it does not call private OpenAI APIs or send derived readings to project servers, analytics providers, or telemetry collectors.
+The extension reads rendered UI text and accessibility attributes only on its permitted ChatGPT and Claude routes. To obtain fresh readings it loads each provider's visible usage page through the user's existing browser session; it does not call private provider APIs or send derived readings to project servers, analytics providers, or telemetry collectors.
 
 For normal manual and scheduled refreshes, the extension creates a newly loaded inactive Analytics tab, waits for its UI to render completely, and closes only the tab it created. It does this even when you are currently viewing Analytics because a long-lived page can keep displaying the values fetched when it opened. The only reusable reader is an extension-owned tab deliberately retained when manual sign-in is required. Your page remains active and is never reloaded by the refresh; **Visit Analytics** is the separate action that deliberately opens or focuses Analytics. This is more reliable than embedding Analytics in a hidden frame and does not require you to open or keep Analytics visible.
 
@@ -221,12 +223,12 @@ Keep the extension small and local-only:
 
 ## Chrome Web Store preparation
 
-The `store-prep/` folder contains a listing draft and privacy-policy draft. The policy needs a working support contact and a public URL before submission. The listing also needs a sanitized current screenshot and a 440x280 promotional tile. The Store publisher display name comes from the developer account; `Teambotic Inc` is recorded as the package author in `package.json`.
+The `store-prep/` folder contains a listing draft and privacy-policy draft. The policy needs a working support contact and a public URL before submission. The listing also needs a sanitized current screenshot and a 440x280 promotional tile. The Store publisher display name comes from the developer account; `Teambotics Inc.` is recorded as the package author in `package.json`.
 
 Create an upload ZIP from the repository root with:
 
 ```powershell
-./scripts/package-web-store.ps1 -OutputPath "C:/path/to/chatgpt-usage-viewer-0.5.1.zip"
+./scripts/package-web-store.ps1 -OutputPath "C:/path/to/ai-usage-viewer-0.6.0.zip"
 ```
 
 The ZIP contains only the runtime extension files, icons, and upstream MIT license. It excludes source tests and store-preparation documents. Creating a package does not upload or submit it.

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Usage Viewer",
-  "description": "Shows Codex usage information visible in your ChatGPT session, with local refresh and alerts.",
+  "name": "AI Usage Viewer",
+  "description": "Shows visible ChatGPT Codex and Claude usage limits with local refresh and alerts.",
   "homepage_url": "https://www.teambotics.app/",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -17,10 +17,11 @@
     "storage"
   ],
   "host_permissions": [
-    "https://chatgpt.com/*"
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
   ],
   "action": {
-    "default_title": "ChatGPT Usage Viewer",
+    "default_title": "AI Usage Viewer",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -33,6 +34,27 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "https://claude.ai/new*"
+      ],
+      "js": [
+        "usage-model.js",
+        "providers.js",
+        "claude-provider.js",
+        "claude-content-script.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://claude.ai/new*"
+      ],
+      "js": [
+        "chat-badge.js"
+      ],
+      "run_at": "document_idle"
+    },
     {
       "matches": [
         "https://chatgpt.com/codex/*/settings/analytics*",

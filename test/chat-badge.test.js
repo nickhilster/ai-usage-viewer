@@ -43,7 +43,7 @@ function state(five = 41, weekly = 82, minutesOld = 5) {
   };
 }
 
-async function harness(initial, savedPosition = null) {
+async function harness(initial, savedPosition = null, hostname = "chatgpt.com") {
   let currentNow = NOW;
   let tick;
   const windowListeners = {};
@@ -54,27 +54,31 @@ async function harness(initial, savedPosition = null) {
   };
   const listeners = [];
   const sent = [];
+  const sentMessages = [];
+  const stateKey = hostname === "claude.ai" ? "aiUsageViewer.state.claude" : ChatGPTUsageConfig.storageKeys.state;
+  const positionKey = hostname === "claude.ai" ? "aiUsageViewer.badgePosition.claude" : "chatgptUsageMonitor.badgePosition";
   const chrome = {
     storage: {
       local: {
         saved: savedPosition ? { "chatgptUsageMonitor.badgePosition": savedPosition } : {},
         async get(keys) {
           const requested = Array.isArray(keys) ? keys : [keys];
-          return Object.fromEntries(requested.map((key) => [key, key === ChatGPTUsageConfig.storageKeys.state ? initial : this.saved[key]]));
+          return Object.fromEntries(requested.map((key) => [key, key === stateKey ? initial : this.saved[key]]));
         },
         async set(value) { Object.assign(this.saved, value); }
       },
       onChanged: { addListener(fn) { listeners.push(fn); } }
     },
-    runtime: { async sendMessage(message) { sent.push(message.type); } }
+    runtime: { async sendMessage(message) { sent.push(message.type); sentMessages.push(message); } }
   };
   const context = vm.createContext({
     console, innerWidth: 1400, innerHeight: 900,
     addEventListener(name, callback) { windowListeners[name] = callback; },
     removeEventListener(name) { delete windowListeners[name]; },
-    setInterval(callback) { tick = callback; }
+    setInterval(callback) { tick = callback; },
+    location: { hostname }
   });
-  for (const name of ["usage-model.js", "chat-badge.js"]) {
+  for (const name of ["usage-model.js", "providers.js", "claude-provider.js", "chat-badge.js"]) {
     vm.runInContext(readFileSync(join(__dirname, "..", name), "utf8"), context);
   }
   await context.ChatGPTUsageBadge.mount(document, chrome, () => currentNow);
@@ -85,14 +89,14 @@ async function harness(initial, savedPosition = null) {
     return null;
   };
   return {
-    body, root, find, sent,
+    body, root, find, sent, sentMessages,
     listenerCount: () => listeners.length,
-    update(value) { listeners.forEach((fn) => fn({ [ChatGPTUsageConfig.storageKeys.state]: { newValue: value } }, "local")); },
+    update(value) { listeners.forEach((fn) => fn({ [stateKey]: { newValue: value } }, "local")); },
     mount: () => context.ChatGPTUsageBadge.mount(document, chrome, () => currentNow),
     reloadScript: () => vm.runInContext(readFileSync(join(__dirname, "..", "chat-badge.js"), "utf8"), context),
     advance(minutes) { currentNow += minutes * 60000; tick(); },
     pointer(name, event) { windowListeners[name](event); },
-    savedPosition() { return chrome.storage.local.saved["chatgptUsageMonitor.badgePosition"]; },
+    savedPosition() { return chrome.storage.local.saved[positionKey]; },
     chrome
   };
 }
@@ -232,4 +236,48 @@ test("a storage update during initial read wins over the older read response", a
   await mounting;
   assert.match(body.children[0].shadowRoot.textContent, /12% left/);
   assert.doesNotMatch(body.children[0].shadowRoot.textContent, /41% left/);
+});
+
+function claudeState(session = "not-started", weekly = 0, resetText = "in 14 min", minutesOld = 0) {
+  return {
+    snapshot: {
+      loginStatus: "logged-in",
+      collectedAt: new Date(NOW - minutesOld * 60000).toISOString(),
+      usage: {
+        "claude:session": session === "not-started"
+          ? { value: "Not started", structured: { state: "not-started", remainingPercent: null } }
+          : { value: `${100 - session}% used`, structured: { state: "active", remainingPercent: session } },
+        "claude:weekly": { value: `${100 - weekly}% used`, structured: { state: "active", remainingPercent: weekly, resetText } }
+      }
+    },
+    status: "usage-current",
+    dataCollectedAt: new Date(NOW - minutesOld * 60000).toISOString()
+  };
+}
+
+test("Claude pages select the Claude provider and render not-started plus weekly countdown", async () => {
+  const ui = await harness(claudeState(), null, "claude.ai");
+  assert.match(ui.find("pill").textContent, /Claude session: Not started/);
+  ui.find("pill").listeners.click();
+  assert.match(ui.find("details").textContent, /Claude weekly usage: 0% left/);
+  assert.match(ui.find("details").textContent, /Resets in 14 min/);
+  ui.advance(1);
+  assert.match(ui.find("details").textContent, /Resets in 13 min/);
+});
+
+test("Claude updates and actions stay provider-specific", async () => {
+  const ui = await harness(claudeState(75, 60), null, "claude.ai");
+  assert.match(ui.find("pill").textContent, /Claude session: 75% left/);
+  ui.update(claudeState(50, 40));
+  assert.match(ui.find("pill").textContent, /50% left/);
+  ui.find("open-usage").listeners.click();
+  assert.equal(JSON.stringify(ui.sentMessages.at(-1)), JSON.stringify({ type: "usage:openUsage", providerId: "claude" }));
+});
+
+test("Claude badge reinjection keeps one mount and one listener", async () => {
+  const ui = await harness(claudeState(), null, "claude.ai");
+  ui.reloadScript();
+  await ui.mount();
+  assert.equal(ui.body.children.length, 1);
+  assert.equal(ui.listenerCount(), 1);
 });

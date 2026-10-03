@@ -136,7 +136,7 @@ test("a 5-hour counter can appear later without a false first alert", () => {
 test("badge follows the lowest actually available percentage", () => {
   const both = CodexCapacityMonitor.evaluateSnapshot(snapshot({ codexWeekly: 14, codex5h: 68 }), null, {});
   assert.equal(both.visual.badgeText, "14");
-  assert.match(both.visual.title, /^ChatGPT Usage Viewer/);
+  assert.match(both.visual.title, /^AI Usage Viewer/);
   assert.match(both.visual.title, /14% remaining$/);
   assert.equal(both.visual.counter.key, "codexWeekly");
 

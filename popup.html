@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ChatGPT Usage Viewer</title>
+    <title>AI Usage Viewer</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -261,6 +261,40 @@
 
       .usage-section > h2 {
         padding-bottom: 12px;
+      }
+
+      .provider-section {
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .provider-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .provider-heading h2 {
+        padding: 0;
+      }
+
+      .provider-heading button {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .provider-metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        padding-top: 10px;
+      }
+
+      .provider-sign-in {
+        color: var(--muted);
+        padding-top: 8px;
       }
 
       .primary-limits {
@@ -606,7 +640,7 @@
   <body>
     <div class="shell">
       <header>
-        <h1>ChatGPT Usage Viewer</h1>
+        <h1>AI Usage Viewer</h1>
       </header>
 
       <div class="status" role="status">
@@ -642,6 +676,8 @@
           <div id="totalsSection" class="totals-list"></div>
         </div>
       </section>
+
+      <div id="providerSections"></div>
 
       <details id="capacitySettings" class="settings">
         <summary>Settings</summary>
@@ -702,6 +738,7 @@
 
     <script src="usage-model.js"></script>
     <script src="providers.js"></script>
+    <script src="claude-provider.js"></script>
     <script src="capacity-monitor.js"></script>
     <script src="popup.js"></script>
   </body>

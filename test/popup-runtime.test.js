@@ -32,10 +32,20 @@ async function openPopup({ legacyBackground = false, paceTrackerVersion = CodexC
     } } }
   };
   const state = { snapshot, dataCollectedAt: snapshot.collectedAt };
+  const claudeSnapshot = {
+    loginStatus: "logged-in", hostname: "claude.ai", domUsageVisible: true,
+    collectedAt: new Date(now).toISOString(), plan: { value: "Team" },
+    usage: {
+      "claude:session": { value: "Not started", structured: { state: "not-started", remainingPercent: null, resetText: null } },
+      "claude:weekly": { value: "100% used", structured: { state: "active", remainingPercent: 0, resetText: "in 14 min" } }
+    }
+  };
+  const claudeState = { snapshot: claudeSnapshot, dataCollectedAt: claudeSnapshot.collectedAt };
   const elements = new Map();
   let onChange;
   let tick;
   let reloads = 0;
+  const messages = [];
   const document = {
     createElement: () => new Element(),
     getElementById(id) {
@@ -53,33 +63,40 @@ async function openPopup({ legacyBackground = false, paceTrackerVersion = CodexC
     chrome: {
       runtime: {
         getManifest() { return JSON.parse(readFileSync(join(__dirname, "..", "manifest.json"), "utf8")); },
-        async sendMessage() { return legacyBackground ? { state } : { state, paceSessionId: "session", paceTrackerVersion }; },
+        async sendMessage(message) {
+          messages.push(message);
+          if (message.type !== "usage:getState") return { ok: true };
+          return legacyBackground ? { state } : {
+            state, providers: { chatgpt: state, claude: claudeState }, paceSessionId: "session", paceTrackerVersion
+          };
+        },
         reload() { reloads += 1; }
       },
       storage: { local: { async get() { return {}; } }, onChanged: { addListener(fn) { onChange = fn; } } }
     }
   });
-  for (const file of ["usage-model.js", "providers.js", "capacity-monitor.js", "popup.js"]) {
+  for (const file of ["usage-model.js", "providers.js", "claude-provider.js", "capacity-monitor.js", "popup.js"]) {
     vm.runInContext(readFileSync(join(__dirname, "..", file), "utf8"), context);
   }
   await new Promise((resolve) => setImmediate(resolve));
   const findEstimate = (element) => element.className === "metric-estimate"
     ? element.textContent : element.children.map(findEstimate).find(Boolean);
   return {
-    snapshot, state,
+    snapshot, state, claudeSnapshot, claudeState,
     elements,
     reloads: () => reloads,
     text: () => findEstimate(document.getElementById("primaryLimits")),
     emit(key, value) { onChange({ [key]: { newValue: value } }, "local"); },
     advance(minutes) { now += minutes * 60000; tick(); },
     now: () => now
+    , messages
   };
 }
 
 test("the reported weekly-only popup starts proportionally and switches to confirmed pace", async () => {
   const popup = await openPopup();
   const keys = ChatGPTUsageConfig.storageKeys;
-  assert.equal(popup.text(), "≈ 11 h 45 min left · initial estimate");
+  assert.equal(popup.text(), "≈ 11 hr 45 min left · initial estimate");
   let capacity = CodexCapacityMonitor.evaluateSnapshot(popup.snapshot, null, {},
     new Date(popup.now()).toISOString(), "session").state;
   popup.emit(keys.capacityState, capacity);
@@ -88,11 +105,11 @@ test("the reported weekly-only popup starts proportionally and switches to confi
   popup.snapshot.usage.codexWeekly.value = "6% remaining";
   popup.snapshot.collectedAt = new Date(popup.now()).toISOString();
   popup.emit(keys.state, popup.state);
-  assert.equal(popup.text(), "≈ 10 h 4 min left · initial estimate");
+  assert.equal(popup.text(), "≈ 10 hr 4 min left · initial estimate");
   capacity = CodexCapacityMonitor.evaluateSnapshot(popup.snapshot, capacity, {},
     new Date(popup.now()).toISOString(), "session").state;
   popup.emit(keys.capacityState, capacity);
-  assert.equal(popup.text(), "≈ 1 h 30 min left at this pace");
+  assert.equal(popup.text(), "≈ 1 hr 30 min left at this pace");
 });
 
 test("an older installed background offers an explicit reload instead of the weekly fallback", async () => {
@@ -132,4 +149,35 @@ test("signed-out and unknown-login snapshots cannot use the proportional fallbac
     popup.emit(ChatGPTUsageConfig.storageKeys.state, popup.state);
     assert.equal(popup.text(), "Estimate unavailable");
   }
+});
+
+test("the popup renders Claude inline with not-started copy and a live countdown", async () => {
+  const popup = await openPopup();
+  const providerText = () => popup.elements.get("providerSections").textContent;
+  assert.match(providerText(), /Claude/);
+  assert.match(providerText(), /Not started · starts when a message is sent/);
+  assert.match(providerText(), /0%/);
+  assert.match(providerText(), /Resets in 14 min/);
+  popup.advance(1);
+  assert.match(providerText(), /Resets in 13 min/);
+  popup.claudeSnapshot.usage["claude:weekly"].structured.resetText = "whenever";
+  popup.emit("aiUsageViewer.state.claude", popup.claudeState);
+  assert.match(providerText(), /Reset: whenever/);
+});
+
+test("Claude's inline action opens its own usage page and Refresh stays global", async () => {
+  const popup = await openPopup();
+  const root = popup.elements.get("providerSections");
+  const buttons = [];
+  const walk = (element) => {
+    if (element.listeners.click) buttons.push(element);
+    element.children.forEach(walk);
+  };
+  walk(root);
+  assert.equal(buttons.length, 1);
+  await buttons[0].listeners.click();
+  assert.equal(JSON.stringify(popup.messages.at(-1)), JSON.stringify({ type: "usage:openUsage", providerId: "claude" }));
+  const refreshMessagesBefore = popup.messages.filter((message) => message.type === "usage:refresh").length;
+  await popup.elements.get("refreshButton").listeners.click();
+  assert.equal(popup.messages.filter((message) => message.type === "usage:refresh").length, refreshMessagesBefore + 1);
 });

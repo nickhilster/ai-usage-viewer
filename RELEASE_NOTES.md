@@ -1,10 +1,19 @@
 # Release Notes
 
+## v0.6.0
+
+### Highlights
+
+- Rename the product to AI Usage Viewer.
+- Add visible Claude current-session and weekly usage alongside ChatGPT Codex usage.
+- Keep background refresh tabs inside an existing normal browser window.
+- Preserve local-only storage and visible-UI extraction for both providers.
+
 ## v0.1.0
 
 ### Highlights
 
-- First public release of ChatGPT Usage Viewer.
+- First public release of the extension, originally named ChatGPT Usage Viewer.
 - Local-only Chrome/Edge extension for visible ChatGPT/Codex usage information.
 - Designed for unpacked installation from this repository.
 

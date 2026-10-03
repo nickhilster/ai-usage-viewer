@@ -2,14 +2,36 @@
   "use strict";
 
   const STALE_AFTER_MS = 30 * 60 * 1000;
-  const POSITION_KEY = "chatgptUsageMonitor.badgePosition";
   const DEFAULT_POSITION = Object.freeze({ left: 160, bottom: 16 });
   const mounted = new WeakMap();
 
+  const fallbackProvider = Object.freeze({
+    id: "chatgpt",
+    name: "ChatGPT",
+    stateKey: ChatGPTUsageConfig.storageKeys.state,
+    counters: [
+      { key: "codex5h", label: "5-hour", limitName: "5-hour" },
+      { key: "codexWeekly", label: "Weekly", limitName: "weekly" }
+    ]
+  });
+
+  function selectedProvider() {
+    const registry = globalScope.UsageProviders;
+    if (!registry) return fallbackProvider;
+    return registry.providerForHostname(globalScope.location && globalScope.location.hostname)
+      || registry.getProvider("chatgpt") || fallbackProvider;
+  }
+
+  function positionKey(provider) {
+    return provider.id === "chatgpt"
+      ? "chatgptUsageMonitor.badgePosition"
+      : `aiUsageViewer.badgePosition.${provider.id}`;
+  }
+
   function percent(state, key) {
-    const value = state && state.snapshot && state.snapshot.usage
-      && state.snapshot.usage[key] && state.snapshot.usage[key].structured
-      && state.snapshot.usage[key].structured.remainingPercent;
+    const field = state && state.snapshot && state.snapshot.usage && state.snapshot.usage[key];
+    if (field && field.structured && field.structured.state === "not-started") return "Not started";
+    const value = field && field.structured && field.structured.remainingPercent;
     return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
       ? `${value}% left` : "Unavailable";
   }
@@ -37,10 +59,16 @@
 
   async function mount(document, chromeApi, now = () => Date.now()) {
     if (mounted.has(document)) return mounted.get(document);
+    const provider = selectedProvider();
+    const POSITION_KEY = positionKey(provider);
+    const displayCounters = provider.id === "chatgpt"
+      ? ["codex5h", "codexWeekly"].map((key) => provider.counters.find((counter) => counter.key === key)).filter(Boolean)
+      : provider.counters;
     const existing = document.querySelector && document.querySelector("[data-chatgpt-usage-badge]");
     if (existing && existing.__chatGPTUsageBadge) return existing.__chatGPTUsageBadge;
     const host = element(document, "div");
     host.setAttribute("data-chatgpt-usage-badge", "");
+    host.setAttribute("data-ai-usage-badge", provider.id);
     host.style.position = "fixed";
     host.style.left = `${DEFAULT_POSITION.left}px`;
     host.style.bottom = `${DEFAULT_POSITION.bottom}px`;
@@ -68,8 +96,12 @@
     const details = element(document, "div", "details");
     details.className = "card";
     details.hidden = true;
-    const five = element(document, "div", "five-hour");
-    const weekly = element(document, "div", "weekly");
+    const counterRows = displayCounters.map((counter) => {
+      const role = provider.id === "chatgpt"
+        ? counter.key === "codex5h" ? "five-hour" : "weekly"
+        : `counter-${counter.key.replace(/[^a-z0-9-]/gi, "-")}`;
+      return [counter, element(document, "div", role)];
+    });
     const refreshed = element(document, "div", "refreshed");
     const actions = element(document, "div");
     actions.className = "actions";
@@ -78,12 +110,12 @@
     const open = element(document, "button", "open-usage", "Open usage");
     open.setAttribute("type", "button");
     actions.append(retry, open);
-    details.append(five, weekly, refreshed, actions);
+    details.append(...counterRows.map(([, row]) => row), refreshed, actions);
     const pill = element(document, "button", "pill");
     pill.className = "pill";
     pill.setAttribute("type", "button");
     pill.setAttribute("aria-expanded", "false");
-    pill.setAttribute("aria-label", "Codex 5-hour usage. Drag to move; click for details.");
+    pill.setAttribute("aria-label", `${provider.name} usage. Drag to move; click for details.`);
     pill.style.cursor = "grab";
     pill.style.touchAction = "none";
     let drag = null;
@@ -139,7 +171,9 @@
       pill.setAttribute("aria-expanded", String(!details.hidden));
     });
     retry.addEventListener("click", () => chromeApi.runtime.sendMessage({ type: "usage:refresh" }));
-    open.addEventListener("click", () => chromeApi.runtime.sendMessage({ type: "usage:openCodexAnalytics" }));
+    open.addEventListener("click", () => chromeApi.runtime.sendMessage(provider.id === "chatgpt"
+      ? { type: "usage:openCodexAnalytics" }
+      : { type: "usage:openUsage", providerId: provider.id }));
     wrap.append(details, pill);
     shadow.append(style, wrap);
     document.body.append(host);
@@ -147,14 +181,24 @@
     let lastState;
     function render(state) {
       lastState = state;
-      const fiveValue = percent(state, "codex5h");
-      const weeklyValue = percent(state, "codexWeekly");
-      const hasValue = fiveValue !== "Unavailable" || weeklyValue !== "Unavailable";
+      const values = counterRows.map(([counter]) => percent(state, counter.key));
+      const hasValue = values.some((value) => value !== "Unavailable");
       const stale = hasValue && isStale(state, now());
       const age = ChatGPTUsageModel.formatRelativeTime(successfulAt(state), now());
-      pill.textContent = hasValue ? `Codex 5-hour: ${fiveValue}${stale ? " · Stale" : ""}` : "Codex usage: Unavailable";
-      five.textContent = `5-hour: ${fiveValue}`;
-      weekly.textContent = `Weekly: ${weeklyValue}`;
+      const firstCounter = displayCounters[0];
+      const pillLabel = provider.id === "chatgpt" ? "Codex 5-hour" : `${provider.name} ${firstCounter.limitName}`;
+      pill.textContent = hasValue ? `${pillLabel}: ${values[0]}${stale ? " · Stale" : ""}` : `${provider.name === "ChatGPT" ? "Codex" : provider.name} usage: Unavailable`;
+      counterRows.forEach(([counter, row], index) => {
+        const field = state && state.snapshot && state.snapshot.usage && state.snapshot.usage[counter.key];
+        const resetText = field && field.structured && field.structured.resetText;
+        const observedAt = Date.parse(state && state.snapshot && state.snapshot.collectedAt || successfulAt(state));
+        const resetAt = resetText ? ChatGPTUsageModel.parseResetAt(resetText, observedAt) : null;
+        const countdown = ChatGPTUsageModel.formatResetCountdown(resetAt, now());
+        const reset = countdown
+          ? countdown === "Reset due · refresh usage" ? ` · ${countdown}` : ` · Resets in ${countdown}`
+          : resetText ? ` · Reset: ${resetText}` : "";
+        row.textContent = `${counter.label}: ${values[index]}${reset}`;
+      });
       refreshed.textContent = `Last refresh: ${age}${stale ? " · Stale" : ""}`;
     }
 
@@ -163,14 +207,14 @@
     mounted.set(document, badge);
     let localUpdateReceived = false;
     chromeApi.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes[ChatGPTUsageConfig.storageKeys.state]) {
+      if (area === "local" && changes[provider.stateKey]) {
         localUpdateReceived = true;
-        render(changes[ChatGPTUsageConfig.storageKeys.state].newValue);
+        render(changes[provider.stateKey].newValue);
       }
     });
     setInterval(() => render(lastState), 60 * 1000);
-    const data = await chromeApi.storage.local.get([ChatGPTUsageConfig.storageKeys.state, POSITION_KEY]);
-    if (!localUpdateReceived) render(data[ChatGPTUsageConfig.storageKeys.state]);
+    const data = await chromeApi.storage.local.get([provider.stateKey, POSITION_KEY]);
+    if (!localUpdateReceived) render(data[provider.stateKey]);
     const savedPosition = data[POSITION_KEY];
     if (savedPosition && Number.isFinite(savedPosition.left) && Number.isFinite(savedPosition.bottom)) {
       host.style.left = `${Math.min(Math.max(0, savedPosition.left), Math.max(0, globalScope.innerWidth - host.offsetWidth))}px`;

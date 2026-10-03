@@ -29,3 +29,22 @@ test("ChatGPT chat pages load only the display badge and its model", () => {
   }
   assert.deepEqual(scriptsAt("https://chat.openai.com/c/abc"), []);
 });
+
+test("Claude usage loads its provider before the rendered-DOM reader", () => {
+  assert.ok(manifest.host_permissions.includes("https://claude.ai/*"));
+  assert.deepEqual(scriptsAt("https://claude.ai/new#settings/usage"), [
+    "usage-model.js", "providers.js", "claude-provider.js", "claude-content-script.js", "chat-badge.js"
+  ]);
+  assert.match(readFileSync(join(__dirname, "..", "background.js"), "utf8"),
+    /importScripts\("usage-model\.js", "providers\.js", "claude-provider\.js", "capacity-monitor\.js"\)/);
+  const popup = readFileSync(join(__dirname, "..", "popup.html"), "utf8");
+  assert.ok(popup.indexOf('src="providers.js"') < popup.indexOf('src="claude-provider.js"'));
+  assert.ok(popup.indexOf('src="claude-provider.js"') < popup.indexOf('src="capacity-monitor.js"'));
+});
+
+test("Claude pages load the generic badge after the reader without loading the reader twice", () => {
+  assert.deepEqual(scriptsAt("https://claude.ai/new#settings/usage"), [
+    "usage-model.js", "providers.js", "claude-provider.js", "claude-content-script.js",
+    "chat-badge.js"
+  ]);
+});

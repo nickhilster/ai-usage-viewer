@@ -547,6 +547,27 @@
     return result.getTime();
   }
 
+  function formatDuration(durationMs, { nominalWeek = false } = {}) {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return null;
+    const minutes = Math.floor(durationMs / 60000);
+    if (nominalWeek && minutes === 7 * 24 * 60) return "1 week";
+    if (minutes < 1) return "<1 min";
+    if (minutes < 60) return `${minutes} min`;
+    if (minutes < 1440) {
+      const hours = Math.floor(minutes / 60);
+      return `${hours} hr${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
+    }
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor(minutes % 1440 / 60);
+    return `${days} d${hours ? ` ${hours} hr` : ""}`;
+  }
+
+  function formatResetCountdown(resetAt, now = Date.now()) {
+    if (!Number.isFinite(resetAt) || !Number.isFinite(now)) return null;
+    if (resetAt <= now) return "Reset due · refresh usage";
+    return formatDuration(resetAt - now);
+  }
+
   function visibleField(snippet, structured, confidence = "medium") {
     const compact = String(snippet || "").replace(/\s+/g, " ").trim();
     return {
@@ -623,7 +644,9 @@
 
   const api = {
     TERMS,
+    formatDuration,
     formatRelativeTime,
+    formatResetCountdown,
     formatTime,
     hasVisibleUsage,
     hasParsedUsageLimit,

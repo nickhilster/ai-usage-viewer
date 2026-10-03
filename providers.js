@@ -28,8 +28,8 @@
 
   function registerProvider(definition) {
     const input = definition && typeof definition === "object" ? definition : {};
-    const id = String(input.id);
-    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+    const id = input.id;
+    if (typeof id !== "string" || !/^[a-z][a-z0-9-]*$/.test(id)) {
       throw new Error("Provider id must use lowercase letters, digits or hyphens.");
     }
     if (registry.has(id)) throw new Error(`Provider already registered: ${id}`);
@@ -45,6 +45,19 @@
       if (!Array.isArray(input[field]) || !input[field].length
         || !input[field].every((value) => typeof value === "string" && value)) {
         throw new Error(`Provider ${id} needs ${field}.`);
+      }
+    }
+    const hostnames = input.hostnames.map((hostname) => hostname.toLowerCase());
+    for (const provider of registry.values()) {
+      if (provider.stateKey === input.stateKey) {
+        throw new Error(`Provider stateKey is already registered: ${input.stateKey}`);
+      }
+      if (provider.retainedSignInTabKey === input.retainedSignInTabKey) {
+        throw new Error(`Provider retainedSignInTabKey is already registered: ${input.retainedSignInTabKey}`);
+      }
+      const duplicateHostname = hostnames.find((hostname) => provider.hostnames.includes(hostname));
+      if (duplicateHostname) {
+        throw new Error(`Provider hostname is already registered: ${duplicateHostname}`);
       }
     }
     const messages = input.messages;
@@ -80,7 +93,7 @@
     const provider = Object.freeze({
       ...input,
       id,
-      hostnames: Object.freeze([...input.hostnames]),
+      hostnames: Object.freeze(hostnames),
       hostPatterns: Object.freeze([...input.hostPatterns]),
       messages: Object.freeze({ ...messages }),
       counters: Object.freeze(counters)
@@ -119,11 +132,19 @@
   }
 
   function providerForUrl(url) {
-    return listProviders().find((provider) => provider.isUsageUrl(url));
+    for (const provider of listProviders()) {
+      try {
+        if (provider.isUsageUrl(url)) return provider;
+      } catch {
+        // A broken third-party provider cannot prevent later providers from matching.
+      }
+    }
+    return undefined;
   }
 
   function providerForHostname(hostname) {
-    return listProviders().find((provider) => provider.hostnames.includes(hostname));
+    const normalized = typeof hostname === "string" ? hostname.toLowerCase() : "";
+    return listProviders().find((provider) => provider.hostnames.includes(normalized));
   }
 
   function defaultStorageKeys(id) {

@@ -4,7 +4,18 @@ const { ChatGPTUsageModel: model } = require("../usage-model.js");
 const { CodexCapacityMonitor: monitor } = require("../capacity-monitor.js");
 
 const hour = 3600000;
+const minute = 60000;
+const day = 24 * hour;
 const observed = new Date(2026, 8, 5, 12, 0).getTime();
+
+test("reset countdowns share the approved compact duration wording", () => {
+  assert.equal(model.formatResetCountdown(observed + 3 * hour + 20 * minute, observed), "3 hr 20 min");
+  assert.equal(model.formatResetCountdown(observed + 42 * minute, observed), "42 min");
+  assert.equal(model.formatResetCountdown(observed + 2 * day + 4 * hour, observed), "2 d 4 hr");
+  assert.equal(model.formatResetCountdown(observed + 30000, observed), "<1 min");
+  assert.equal(model.formatResetCountdown(observed - 1, observed), "Reset due · refresh usage");
+  assert.equal(model.formatResetCountdown(null, observed), null);
+});
 
 test("relative reset durations are anchored to the observation, not popup opening", () => {
   for (const text of ["in 1 hr", "1 h", "en 1 hora", "60 minutes"]) {
@@ -52,7 +63,7 @@ test("both a measured rate and a proportional estimate are capped by the reset",
   for (const status of ["nominal", "estimated"]) {
     const result = monitor.limitEstimateToReset({ status, durationMs: 2.5 * hour }, observed + hour, observed);
     assert.equal(result.durationMs, hour);
-    assert.equal(monitor.formatPaceEstimate(result), "≈ 1 h left · resets then");
+    assert.equal(monitor.formatPaceEstimate(result), "≈ 1 hr left · resets then");
     assert.equal(monitor.limitEstimateToReset(result, observed + hour, observed + hour / 4).durationMs, 0.75 * hour);
   }
 });

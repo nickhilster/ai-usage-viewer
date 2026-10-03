@@ -21,7 +21,7 @@ test("each limit estimates exhaustion from its own confirmed refreshes", () => {
   state = refresh(state, 15, { codex5h: 70, codexWeekly: 85 });
   assert.equal(estimate(state, 15).durationMs, 105 * minute);
   assert.equal(estimate(state, 15, "codexWeekly").durationMs, 255 * minute);
-  assert.equal(monitor.formatPaceEstimate(estimate(state, 15)), "≈ 1 h 45 min left at this pace");
+  assert.equal(monitor.formatPaceEstimate(estimate(state, 15)), "≈ 1 hr 45 min left at this pace");
 });
 
 test("first and near-simultaneous readings use a proportional initial estimate", () => {
@@ -36,9 +36,9 @@ test("first and near-simultaneous readings use a proportional initial estimate",
 test("half a window initially shows 2.5 hours or 3.5 days, then uses measured pace", () => {
   let state = refresh(null, 0, { codex5h: 50, codexWeekly: 50 }, "new-session");
   assert.equal(estimate(state, 0).durationMs, 150 * minute);
-  assert.equal(monitor.formatPaceEstimate(estimate(state, 0)), "≈ 2 h 30 min left · initial estimate");
+  assert.equal(monitor.formatPaceEstimate(estimate(state, 0)), "≈ 2 hr 30 min left · initial estimate");
   assert.equal(estimate(state, 0, "codexWeekly").durationMs, 3.5 * 24 * 60 * minute);
-  assert.equal(monitor.formatPaceEstimate(estimate(state, 0, "codexWeekly")), "≈ 3 d 12 h left · initial estimate");
+  assert.equal(monitor.formatPaceEstimate(estimate(state, 0, "codexWeekly")), "≈ 3 d 12 hr left · initial estimate");
   state = refresh(state, 15, { codex5h: 40, codexWeekly: 45 }, "new-session");
   assert.equal(estimate(state, 15).durationMs, 60 * minute);
   assert.equal(estimate(state, 15, "codexWeekly").durationMs, 135 * minute);
@@ -57,7 +57,7 @@ test("a fresh weekly balance has a proportional estimate even without stored pac
   for (const pace of [null, {}, { codexWeekly: [] }]) {
     const result = monitor.estimateDisplayedTimeRemaining(pace, "codexWeekly", 7, start, now);
     assert.equal(result.status, "nominal");
-    assert.equal(monitor.formatPaceEstimate(result), "≈ 11 h 45 min left · initial estimate");
+    assert.equal(monitor.formatPaceEstimate(result), "≈ 11 hr 45 min left · initial estimate");
   }
 });
 
@@ -117,7 +117,7 @@ test("a higher balance in a new browser session starts with the nominal windows"
   assert.equal(estimate(state, 30).status, "nominal");
   assert.equal(estimate(state, 30).durationMs, 285 * minute);
   assert.equal(estimate(state, 30, "codexWeekly").durationMs, 7 * 24 * 60 * minute);
-  assert.equal(monitor.formatPaceEstimate(estimate(state, 30)), "≈ 4 h 45 min left · initial estimate");
+  assert.equal(monitor.formatPaceEstimate(estimate(state, 30)), "≈ 4 hr 45 min left · initial estimate");
   assert.equal(monitor.formatPaceEstimate(estimate(state, 30, "codexWeekly")), "≈ 1 week left · initial estimate");
   state = refresh(state, 45, { codex5h: 85, codexWeekly: 95 }, "second-session");
   assert.equal(estimate(state, 45).durationMs, 127.5 * minute);
@@ -206,7 +206,7 @@ test("clock reversal restarts collection instead of deriving a negative rate", (
 });
 
 test("formatting covers short durations, hour/day boundaries and missing history", () => {
-  for (const [minutes, expected] of [[0.1, "<1 min"], [10, "10 min"], [60, "1 h"], [1440, "1 d"], [1500, "1 d 1 h"]]) {
+  for (const [minutes, expected] of [[0.1, "<1 min"], [10, "10 min"], [60, "1 hr"], [1440, "1 d"], [1500, "1 d 1 hr"]]) {
     assert.equal(monitor.formatPaceEstimate({ status: "estimated", durationMs: minutes * minute }), `≈ ${expected} left at this pace`);
   }
   assert.equal(monitor.estimateTimeRemaining(null, "codex5h", 30).status, "unavailable");
@@ -232,7 +232,7 @@ test("measured weekly consumption takes precedence over the 7-percent proportion
   const result = monitor.estimateDisplayedTimeRemaining(state.pace, "codexWeekly", 7, start + 105 * minute, start + 105 * minute);
   assert.equal(result.status, "estimated");
   assert.equal(result.durationMs, 7 / 8 * 105 * minute);
-  assert.equal(monitor.formatPaceEstimate(result), "≈ 1 h 31 min left at this pace");
+  assert.equal(monitor.formatPaceEstimate(result), "≈ 1 hr 31 min left at this pace");
 });
 
 test("upgrading from legacy counters uses the previous confirmed balance to measure the first decrease", () => {

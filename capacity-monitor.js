@@ -296,13 +296,9 @@
     if (estimate.status === "idle") return "No recent consumption";
     if (!["estimated", "nominal", "reset-bound"].includes(estimate.status)) return "Estimate unavailable";
     if (estimate.status === "reset-bound" && estimate.durationMs === 0) return "Reset due · refresh usage";
-    const minutes = Math.floor(estimate.durationMs / 60000);
-    let duration;
-    if (estimate.status === "nominal" && minutes === 7 * 24 * 60) duration = "1 week";
-    else if (minutes < 1) duration = "<1 min";
-    else if (minutes < 60) duration = `${minutes} min`;
-    else if (minutes < 1440) duration = `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
-    else duration = `${Math.floor(minutes / 1440)} d${Math.floor(minutes % 1440 / 60) ? ` ${Math.floor(minutes % 1440 / 60)} h` : ""}`;
+    const duration = usageModel.formatDuration(estimate.durationMs, {
+      nominalWeek: estimate.status === "nominal"
+    });
     if (estimate.status === "reset-bound") return `≈ ${duration} left · resets then`;
     return estimate.status === "nominal"
       ? `≈ ${duration} left · initial estimate`
@@ -366,7 +362,7 @@
         badgeTextColor: getContrastingTextColor(badgeColor),
         counter: null,
         state: "normal",
-        title: "ChatGPT Usage Viewer — usage unavailable"
+        title: "AI Usage Viewer — usage unavailable"
       };
     }
     const worst = available.reduce((selected, candidate) => (
@@ -384,7 +380,7 @@
       badgeTextColor: getContrastingTextColor(badgeColor),
       counter: worst,
       state,
-      title: `ChatGPT Usage Viewer — ${worst.label}: ${worst.remainingPercent}% remaining`
+      title: `AI Usage Viewer — ${worst.label}: ${worst.remainingPercent}% remaining`
     };
   }
 

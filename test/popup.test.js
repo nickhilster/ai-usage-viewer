@@ -28,15 +28,15 @@ test("the popup footer credits Teambotics in tiny text and identifies the local-
 test("release author and versions match extension metadata", () => {
   assert.equal(packageMetadata.author, "Teambotics Inc.");
   assert.equal(packageMetadata.homepage, "https://www.teambotics.app/");
-  assert.equal(packageMetadata.name, "chatgpt-usage-viewer");
+  assert.equal(packageMetadata.name, "ai-usage-viewer");
   assert.equal(packageMetadata.version, manifest.version);
-  assert.equal(manifest.version, "0.5.1");
+  assert.equal(manifest.version, "0.6.0");
   assert.equal(manifest.homepage_url, "https://www.teambotics.app/");
-  assert.equal(manifest.name, "ChatGPT Usage Viewer");
-  assert.equal(manifest.action.default_title, "ChatGPT Usage Viewer");
-  assert.match(popupHtml, /<title>ChatGPT Usage Viewer<\/title>/);
-  assert.match(popupHtml, /<h1>ChatGPT Usage Viewer<\/h1>/);
-  assert.match(popupSource, /extension: "ChatGPT Usage Viewer"/);
+  assert.equal(manifest.name, "AI Usage Viewer");
+  assert.equal(manifest.action.default_title, "AI Usage Viewer");
+  assert.match(popupHtml, /<title>AI Usage Viewer<\/title>/);
+  assert.match(popupHtml, /<h1>AI Usage Viewer<\/h1>/);
+  assert.match(popupSource, /extension: "AI Usage Viewer"/);
 });
 
 test("account metadata has no redundant ChatGPT section heading", () => {
@@ -62,6 +62,13 @@ test("metrics are grouped into primary limits and totals", () => {
   assert.match(popupHtml, /id="primaryLimits" class="primary-limits"/);
   assert.doesNotMatch(popupHtml, /otherLimits|Other limits/);
   assert.match(popupHtml, /id="totalsSection" class="totals-list"/);
+});
+
+test("provider sections are rendered inline from the registry", () => {
+  assert.match(popupHtml, /id="providerSections"/);
+  assert.match(popupSource, /UsageProviders\.listProviders\(\)/);
+  assert.match(popupSource, /usage:openUsage/);
+  assert.match(popupSource, /formatResetCountdown/);
 });
 
 test("an empty 5-hour limit is shown in a direct row below Weekly", () => {

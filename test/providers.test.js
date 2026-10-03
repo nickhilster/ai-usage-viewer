@@ -3,7 +3,7 @@ const { test } = require("node:test");
 
 const { ChatGPTUsageConfig } = require("../usage-model.js");
 const { UsageProviders } = require("../providers.js");
-const { FAKE_KEY, fakeProvider, withFakeProvider } = require("./helpers/fake-provider.js");
+const { FAKE_KEY, fakeProvider, withFakeProvider, withProvider } = require("./helpers/fake-provider.js");
 
 test("the built-in ChatGPT provider keeps its grandfathered keys and windows", () => {
   const chatgpt = UsageProviders.getProvider("chatgpt");
@@ -31,6 +31,7 @@ test("ChatGPT recognises only the Codex Analytics settings page", () => {
 });
 
 test("registerProvider rejects duplicate ids and malformed definitions", () => {
+  assert.throws(() => UsageProviders.registerProvider(fakeProvider({ id: undefined })), /Provider id/);
   assert.throws(() => UsageProviders.registerProvider(fakeProvider({ id: "chatgpt" })), /already registered/);
   assert.throws(() => UsageProviders.registerProvider(fakeProvider({ id: "Bad Id" })), /Provider id/);
   assert.throws(() => UsageProviders.registerProvider(fakeProvider({ usageUrl: "" })), /usageUrl/);
@@ -38,6 +39,46 @@ test("registerProvider rejects duplicate ids and malformed definitions", () => {
   assert.throws(() => UsageProviders.registerProvider(fakeProvider({ isUsageUrl: null })), /isUsageUrl/);
   assert.throws(() => UsageProviders.registerProvider(fakeProvider({ messages: { loadFailed: "x" } })), /messages/);
   assert.equal(UsageProviders.getProvider("fake"), undefined);
+});
+
+test("provider-owned storage keys and hostnames are unique", () => {
+  const chatgpt = UsageProviders.getProvider("chatgpt");
+  try {
+    assert.throws(() => UsageProviders.registerProvider(fakeProvider({
+      stateKey: chatgpt.stateKey
+    })), /stateKey/);
+    assert.throws(() => UsageProviders.registerProvider(fakeProvider({
+      retainedSignInTabKey: chatgpt.retainedSignInTabKey
+    })), /retainedSignInTabKey/);
+    assert.throws(() => UsageProviders.registerProvider(fakeProvider({
+      hostnames: ["CHATGPT.COM"]
+    })), /hostname/i);
+  } finally {
+    UsageProviders.unregisterProvider("fake");
+  }
+});
+
+test("a throwing URL predicate cannot block later providers", () => {
+  const throwing = fakeProvider({
+    id: "throwing",
+    usageUrl: "https://throwing.example/usage",
+    hostnames: ["throwing.example"],
+    hostPatterns: ["https://throwing.example/*"],
+    stateKey: "aiUsageViewer.state.throwing",
+    retainedSignInTabKey: "aiUsageViewer.retainedSignInTab.throwing",
+    counters: [{
+      key: "throwing:session",
+      label: "Throwing session usage",
+      limitName: "session",
+      windowMs: 1000
+    }],
+    isUsageUrl() { throw new Error("broken provider predicate"); }
+  });
+  withProvider(throwing, () => {
+    withFakeProvider((provider) => {
+      assert.equal(UsageProviders.providerForUrl("https://fake.example/usage"), provider);
+    });
+  });
 });
 
 test("non-grandfathered counter keys must be namespaced and globally unique", () => {

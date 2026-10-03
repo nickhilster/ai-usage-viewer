@@ -55,7 +55,11 @@ function fakeSnapshot(remainingPercent, collectedAt, resetText = "in 2 hours") {
 }
 
 function withFakeProvider(run, overrides) {
-  const provider = UsageProviders.registerProvider(fakeProvider(overrides));
+  return withProvider(fakeProvider(overrides), run);
+}
+
+function withProvider(definition, run) {
+  const provider = UsageProviders.registerProvider(definition);
   try {
     return run(provider);
   } finally {
@@ -77,5 +81,6 @@ module.exports = {
   fakeProvider,
   fakeSnapshot,
   withFakeProvider,
-  withFakeProviderAsync
+  withFakeProviderAsync,
+  withProvider
 };
